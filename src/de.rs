@@ -1,16 +1,15 @@
 use std::{
     io::{self, Read},
-    iter::Peekable,
     str,
 };
 
 use num::{CheckedAdd, CheckedMul};
-use serde::de::Unexpected;
 
 use crate::{Error, Result};
 
 pub struct Reader<R: Read> {
-    r: Peekable<io::Bytes<R>>,
+    r: io::Bytes<R>,
+    ch: Option<u8>,
 }
 
 pub struct Deserializer<R: Read> {
@@ -24,23 +23,30 @@ where
 {
     pub fn from_reader(r: R) -> Self {
         Reader {
-            r: r.bytes().peekable(),
+            r: r.bytes(),
+            ch: None,
         }
     }
 
     fn eat_char(&mut self) {
-        self.r.next();
+        self.ch = None;
     }
 
     fn next_char(&mut self) -> Result<Option<u8>> {
-        self.r.next().transpose().map_err(|e| Error::io(&e))
+        self.r
+            .next()
+            .transpose()
+            .map_err(|e| Error::io(e))
+            .map(|ch| {
+                self.ch = ch;
+                ch
+            })
     }
 
     fn peek_char(&mut self) -> Result<Option<u8>> {
-        match self.r.peek() {
-            Some(Ok(ch)) => Ok(Some(*ch)),
-            Some(Err(err)) => Err(Error::io(&err)),
-            None => Ok(None),
+        match self.ch {
+            Some(ch) => Ok(Some(ch)),
+            None => self.next_char(),
         }
     }
 
@@ -52,15 +58,11 @@ where
     where
         T: CheckedMul + CheckedAdd + From<u8>,
     {
-        let next = match self.next_char()? {
-            Some(ch) => ch,
-            None => {
-                return Err(Error::eof());
-            }
-        };
-        match next {
+        let peek = self.peek_char()?.ok_or_else(|| Error::eof())?;
+        self.eat_char();
+        match peek {
             b'0' => match self.peek_char()? {
-                Some(b'0'..=b'9') => Err(Error::invalid_length()),
+                Some(b'0'..=b'9') => Err(Error::unexpected_value("number after 0")),
                 _ => Ok(T::from(0)),
             },
             ch @ b'1'..=b'9' => {
@@ -68,7 +70,7 @@ where
                 loop {
                     match self.peek_char()? {
                         Some(c @ b'0'..=b'9') => {
-                            let mut digit = T::from(c - b'0');
+                            let digit = T::from(c - b'0');
                             let ten = T::from(10);
                             if let Some(r) = num
                                 .checked_mul(&ten)
@@ -87,14 +89,15 @@ where
                     }
                 }
             }
-            _ => Err(Error::invalid_length()),
+            _ => Err(Error::expected_value("number")),
         }
     }
 
     fn read_str_len(&mut self, len: usize, buf: &mut Vec<u8>) -> Result<()> {
         for _count in 0..len {
-            match self.next_char()? {
+            match self.peek_char()? {
                 Some(c) => {
+                    self.eat_char();
                     buf.push(c);
                 }
                 None => return Err(Error::eof()),
@@ -121,12 +124,13 @@ where
 
     fn parse_ident(&mut self, ident: &[u8]) -> Result<()> {
         for expected in ident {
-            match self.next_char()? {
+            match self.peek_char()? {
                 None => return Err(Error::eof()),
                 Some(ch) => {
                     if ch != *expected {
-                        return Err(Error::expect_ident());
+                        return Err(Error::expected_value("ident"));
                     }
+                    self.eat_char();
                 }
             }
         }
@@ -181,7 +185,7 @@ where
                 self.eat_crlf()?;
                 Ok(false)
             }
-            _ => Err(Error::expect_ident()),
+            _ => Err(Error::expected_value("bool")),
         }
     }
 
@@ -210,13 +214,12 @@ impl<R: Read> Deserializer<R> {
         Ok(&self.buf[..])
     }
 
-    fn parse_simple_string(&mut self) -> Result<&str> {
+    fn parse_simple_string(&mut self) -> Result<&[u8]> {
         self.buf.clear();
         self.reader.read_non_crlf_str(&mut self.buf)?;
         self.reader.eat_crlf()?;
 
-        let val = str::from_utf8(&self.buf[..]).map_err(|e| Error::utf8(e.valid_up_to()))?;
-        Ok(val)
+        Ok(&self.buf[..])
     }
 
     fn parse_double(&mut self) -> Result<f64> {
@@ -239,8 +242,21 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
 
         match peek {
             // blob string
-            b'$' => self.deserialize_bytes(visitor),
+            b'$' => self.deserialize_str(visitor),
+            // verbatim string
+            b'=' => self.deserialize_str(visitor),
+            // blob error
+            b'!' => self.deserialize_str(visitor),
+            // simple string
             b'+' => self.deserialize_str(visitor),
+            // simple error
+            b'-' => self.deserialize_str(visitor),
+            // boolean
+            b'#' => self.deserialize_bool(visitor),
+            // number
+            b':' => self.deserialize_i64(visitor),
+            // floating point
+            b',' => self.deserialize_f64(visitor),
             _ => Err(Error::expected_value("type header")),
         }
     }
@@ -260,7 +276,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                 let val = self.reader.read_bool()?;
                 visitor.visit_bool(val)
             }
-            _ => Err(Error::invalid_type(&"bool")),
+            _ => Err(Error::expected_marker(&"bool")),
         }
     }
 
@@ -306,10 +322,10 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                         self.reader.eat_crlf()?;
                         visitor.visit_i64(num)
                     }
-                    _ => Err(Error::expected_number()),
+                    _ => Err(Error::expected_value("number")),
                 }
             }
-            _ => Err(Error::invalid_type("number")),
+            _ => Err(Error::expected_marker("number")),
         }
     }
 
@@ -344,19 +360,16 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
             b':' => {
                 self.reader.eat_char();
                 match self.reader.peek_char()? {
-                    Some(b'-') => Err(Error::invalid_type("signed")),
+                    Some(b'-') => Err(Error::unexpected_value("signed")),
                     Some(b'0'..=b'9') => {
                         let num: u64 = self.reader.read_unsigned()?;
                         self.reader.eat_crlf()?;
                         visitor.visit_u64(num)
                     }
-                    _ => Err(Error::expected_number()),
+                    _ => Err(Error::expected_value("number")),
                 }
             }
-            ch => {
-                println!("peeked {}", ch);
-                Err(Error::invalid_type("number"))
-            }
+            _ => Err(Error::expected_marker("number")),
         }
     }
 
@@ -388,7 +401,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                         self.reader.eat_crlf()?;
                         visitor.visit_f64(num as f64)
                     }
-                    _ => Err(Error::expected_number()),
+                    _ => Err(Error::expected_value("number")),
                 }
             }
             b',' => {
@@ -396,7 +409,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                 let num = self.parse_double()?;
                 visitor.visit_f64(num)
             }
-            _ => Err(Error::expected_number()),
+            _ => Err(Error::expected_marker("number|double")),
         }
     }
 
@@ -404,7 +417,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        todo!()
+        self.deserialize_str(visitor)
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value>
@@ -416,12 +429,14 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
         match peek {
             b'+' => {
                 self.reader.eat_char();
-                let string = self.parse_simple_string()?;
+                let bytes = self.parse_simple_string()?;
+                let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
                 visitor.visit_str(string)
             }
             b'-' => {
                 self.reader.eat_char();
-                let string = self.parse_simple_string()?;
+                let bytes = self.parse_simple_string()?;
+                let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
                 visitor.visit_str(string)
             }
             b'$' => {
@@ -436,7 +451,13 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                 let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
                 visitor.visit_str(string)
             }
-            _ => Err(Error::invalid_type("string")),
+            b'=' => {
+                self.reader.eat_char();
+                let bytes = self.parse_blob_string()?;
+                let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
+                visitor.visit_str(string)
+            }
+            _ => Err(Error::expected_marker("string|error")),
         }
     }
 
@@ -451,14 +472,43 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        self.deserialize_any(visitor)
+        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+
+        match peek {
+            b'+' => {
+                self.reader.eat_char();
+                let bytes = self.parse_simple_string()?;
+                visitor.visit_bytes(bytes)
+            }
+            b'-' => {
+                self.reader.eat_char();
+                let bytes = self.parse_simple_string()?;
+                visitor.visit_bytes(bytes)
+            }
+            b'$' => {
+                self.reader.eat_char();
+                let bytes = self.parse_blob_string()?;
+                visitor.visit_bytes(bytes)
+            }
+            b'!' => {
+                self.reader.eat_char();
+                let bytes = self.parse_blob_string()?;
+                visitor.visit_bytes(bytes)
+            }
+            b'=' => {
+                self.reader.eat_char();
+                let bytes = self.parse_blob_string()?;
+                visitor.visit_bytes(bytes)
+            }
+            _ => Err(Error::expected_marker("string|error")),
+        }
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value>
     where
         V: serde::de::Visitor<'de>,
     {
-        todo!()
+        self.deserialize_bytes(visitor)
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
@@ -468,6 +518,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
         let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
 
         match peek {
+            // "_\r\n" => null
             b'_' => {
                 self.reader.eat_char();
                 self.reader.eat_crlf()?;
@@ -489,7 +540,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                 self.reader.eat_crlf()?;
                 visitor.visit_unit()
             }
-            _ => Err(Error::expected_value("null")),
+            _ => Err(Error::expected_marker("null")),
         }
     }
 
@@ -510,10 +561,11 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
             crate::custom::SIMPLE_ERROR_TOKEN => {
                 if peek == b'-' {
                     self.reader.eat_char();
-                    let string = self.parse_simple_string()?;
+                    let bytes = self.parse_simple_string()?;
+                    let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
                     visitor.visit_str(string)
                 } else {
-                    Err(Error::invalid_type("simple error"))
+                    Err(Error::expected_marker("simple error"))
                 }
             }
             crate::custom::BLOB_ERROR_TOKEN => {
@@ -523,16 +575,17 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                     let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
                     visitor.visit_str(string)
                 } else {
-                    Err(Error::invalid_type("simple error"))
+                    Err(Error::expected_marker("blob error"))
                 }
             }
             crate::custom::SIMPLE_STRING_TOKEN => {
                 if peek == b'+' {
                     self.reader.eat_char();
-                    let string = self.parse_simple_string()?;
+                    let bytes = self.parse_simple_string()?;
+                    let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
                     visitor.visit_str(string)
                 } else {
-                    Err(Error::invalid_type("simple error"))
+                    Err(Error::expected_marker("simple string"))
                 }
             }
             crate::custom::BLOB_STRING_TOKEN => {
@@ -542,7 +595,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                     let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
                     visitor.visit_str(string)
                 } else {
-                    Err(Error::invalid_type("simple error"))
+                    Err(Error::expected_marker("blob string"))
                 }
             }
             _ => visitor.visit_newtype_struct(self),
@@ -562,7 +615,13 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                 self.reader.eat_crlf()?;
                 visitor.visit_seq(CountSeqAccess::new(self, len))
             }
-            _ => Err(Error::invalid_type("array")),
+            b'~' => {
+                self.reader.eat_char();
+                let len = self.reader.read_length()?;
+                self.reader.eat_crlf()?;
+                visitor.visit_seq(CountSeqAccess::new(self, len))
+            }
+            _ => Err(Error::expected_marker("array|set")),
         }
     }
 
@@ -589,26 +648,36 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        todo!()
+        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+
+        match peek {
+            b'%' => {
+                self.reader.eat_char();
+                let len = self.reader.read_length()?;
+                self.reader.eat_crlf()?;
+                visitor.visit_map(CountMapAccess::new(self, len))
+            }
+            _ => Err(Error::expected_marker("map")),
+        }
     }
 
     fn deserialize_struct<V>(
         self,
-        name: &'static str,
-        fields: &'static [&'static str],
+        _name: &'static str,
+        _fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value>
     where
         V: serde::de::Visitor<'de>,
     {
-        todo!()
+        self.deserialize_map(visitor)
     }
 
     fn deserialize_enum<V>(
         self,
-        name: &'static str,
-        variants: &'static [&'static str],
-        visitor: V,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        _visitor: V,
     ) -> Result<V::Value>
     where
         V: serde::de::Visitor<'de>,
@@ -620,14 +689,14 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        todo!()
+        self.deserialize_str(visitor)
     }
 
     fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value>
     where
         V: serde::de::Visitor<'de>,
     {
-        todo!()
+        self.deserialize_any(visitor)
     }
 }
 struct CountSeqAccess<'a, R: Read> {
@@ -649,7 +718,6 @@ impl<'de, 'a, R: Read + 'a + 'de> serde::de::SeqAccess<'de> for CountSeqAccess<'
         T: serde::de::DeserializeSeed<'de>,
     {
         if self.len > 0 {
-            println!("peek {:?}", self.de.reader.peek_char());
             let result = seed.deserialize(&mut *self.de).map(|r| Some(r));
             self.len -= 1;
 
@@ -660,9 +728,44 @@ impl<'de, 'a, R: Read + 'a + 'de> serde::de::SeqAccess<'de> for CountSeqAccess<'
     }
 }
 
+struct CountMapAccess<'a, R: Read> {
+    de: &'a mut Deserializer<R>,
+    len: usize,
+}
+
+impl<'a, R: Read> CountMapAccess<'a, R> {
+    fn new(de: &'a mut Deserializer<R>, len: usize) -> Self {
+        CountMapAccess { de, len }
+    }
+}
+
+impl<'de, 'a, R: Read + 'a + 'de> serde::de::MapAccess<'de> for CountMapAccess<'a, R> {
+    type Error = Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>>
+    where
+        K: serde::de::DeserializeSeed<'de>,
+    {
+        if self.len > 0 {
+            let key = seed.deserialize(&mut *self.de).map(|r| Some(r));
+            self.len -= 1;
+            key
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value>
+    where
+        V: serde::de::DeserializeSeed<'de>,
+    {
+        seed.deserialize(&mut *self.de)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{collections::HashMap, io::Cursor};
 
     use serde::Deserialize;
 
@@ -749,6 +852,13 @@ mod tests {
     }
 
     #[test]
+    fn test_char() {
+        let mut d = Deserializer::from_reader(Cursor::new(String::from("+a\r\n")));
+        let value: char = Deserialize::deserialize(&mut d).unwrap();
+        assert_eq!(value, 'a');
+    }
+
+    #[test]
     fn test_seq() {
         let mut d =
             Deserializer::from_reader(Cursor::new(String::from("*3\r\n:1\r\n:2\r\n:3\r\n")));
@@ -760,5 +870,33 @@ mod tests {
         )));
         let value: ((u64, String, u64), bool) = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, ((1, String::from("hello"), 2), false));
+    }
+
+    #[test]
+    fn test_map() {
+        let mut d = Deserializer::from_reader(Cursor::new(String::from(
+            "%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n",
+        )));
+        let value: HashMap<String, usize> = Deserialize::deserialize(&mut d).unwrap();
+        let kv = value.into_iter().collect::<Vec<_>>();
+        assert!(kv.contains(&("first".to_string(), 1)));
+        assert!(kv.contains(&("second".to_string(), 2)));
+
+        #[derive(PartialEq, Deserialize, Debug)]
+        struct CustomMap {
+            first: usize,
+            second: f64,
+        }
+        let mut d = Deserializer::from_reader(Cursor::new(String::from(
+            "%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n",
+        )));
+        let value: CustomMap = Deserialize::deserialize(&mut d).unwrap();
+        assert_eq!(
+            value,
+            CustomMap {
+                first: 1,
+                second: 2.0
+            }
+        );
     }
 }

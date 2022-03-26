@@ -1,50 +1,47 @@
-use serde::de::Expected;
-
 #[derive(Debug)]
 pub enum Error {
     InvalidBytes,
+    IO(std::io::Error),
+    EOF,
+    ExpectedMarker(&'static str),
+    ExpectedValue(&'static str),
+    UnexpectedValue(&'static str),
+    UTF8(usize),
+    Parse,
 }
 
 impl Error {
-    pub fn io(io_err: &std::io::Error) -> Self {
-        todo!()
+    pub fn io(err: std::io::Error) -> Self {
+        Error::IO(err)
     }
 
     pub fn eof() -> Self {
-        todo!()
+        Error::EOF
+    }
+
+    pub fn expected_marker(expecting: &'static str) -> Self {
+        Error::ExpectedMarker(expecting)
     }
 
     /// expect some value but got something else
-    pub fn expected_value(expecting: &str) -> Self {
-        todo!()
+    pub fn expected_value(expecting: &'static str) -> Self {
+        Error::ExpectedValue(expecting)
     }
 
-    pub fn invalid_length() -> Self {
-        todo!()
-    }
-
-    pub fn expect_ident() -> Self {
-        todo!()
+    pub fn unexpected_value(unexpected: &'static str) -> Self {
+        Error::UnexpectedValue(unexpected)
     }
 
     pub fn utf8(valid_up_to: usize) -> Self {
-        todo!()
-    }
-
-    pub fn invalid_type(expecting: &str) -> Self {
-        todo!()
+        Error::UTF8(valid_up_to)
     }
 
     pub fn overflow() -> Self {
-        todo!()
-    }
-
-    pub fn expected_number() -> Self {
-        todo!()
+        Error::Parse
     }
 
     pub fn parse() -> Self {
-        todo!()
+        Error::Parse
     }
 }
 
