@@ -3,7 +3,7 @@ pub const BLOB_ERROR_TOKEN: &str = "$BulkError";
 pub const SIMPLE_STRING_TOKEN: &str = "$SimpleString";
 pub const BLOB_STRING_TOKEN: &str = "$BulkString";
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 pub mod owned {
     use serde::de::Visitor;
 
