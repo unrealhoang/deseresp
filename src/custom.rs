@@ -47,137 +47,41 @@ pub mod owned {
     impl_deserialize!(SimpleString: SIMPLE_STRING_TOKEN => SimpleStringVisitor);
     impl_deserialize!(BlobString: BLOB_STRING_TOKEN => BlobStringVisitor);
 
+    macro_rules! empty_visit {
+        ($visit_func:ident => $typ:ty) => {
+            fn $visit_func<E>(self, _v: $typ) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(())
+            }
+        }
+    }
+
     pub struct AttributeSkip;
     pub struct AnySkip;
     struct AnySkipVisitor;
     impl<'de> Visitor<'de> for AnySkipVisitor {
         type Value = ();
 
-        fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_i8<E>(self, v: i8) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_i16<E>(self, v: i16) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_i32<E>(self, v: i32) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_u8<E>(self, v: u8) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_u16<E>(self, v: u16) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_u32<E>(self, v: u32) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_f32<E>(self, v: f32) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_char<E>(self, v: char) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_borrowed_bytes<E>(self, v: &'de [u8]) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
-
-        fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(())
-        }
+        empty_visit!(visit_bool => bool);
+        empty_visit!(visit_i8 => i8);
+        empty_visit!(visit_i16 => i16);
+        empty_visit!(visit_i32 => i32);
+        empty_visit!(visit_i64 => i64);
+        empty_visit!(visit_u8 => u8);
+        empty_visit!(visit_u16 => u16);
+        empty_visit!(visit_u32 => u32);
+        empty_visit!(visit_u64 => u64);
+        empty_visit!(visit_f32 => f32);
+        empty_visit!(visit_f64 => f64);
+        empty_visit!(visit_char => char);
+        empty_visit!(visit_str => &str);
+        empty_visit!(visit_borrowed_str => &'de str);
+        empty_visit!(visit_string => String);
+        empty_visit!(visit_bytes => &[u8]);
+        empty_visit!(visit_borrowed_bytes => &'de [u8]);
+        empty_visit!(visit_byte_buf => Vec<u8>);
 
         fn visit_none<E>(self) -> Result<Self::Value, E>
         where
@@ -225,13 +129,6 @@ pub mod owned {
                 map.next_value::<AnySkip>()?;
             }
 
-            Ok(())
-        }
-
-        fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
-        where
-            A: serde::de::EnumAccess<'de>,
-        {
             Ok(())
         }
 

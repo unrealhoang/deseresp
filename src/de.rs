@@ -256,7 +256,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+        let peek = self.peek_skip_attribute()?;
 
         match peek {
             // blob string
@@ -291,11 +291,9 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = match self.reader.peek_char()? {
-            Some(ch) => ch,
-            None => return Err(Error::eof()),
-        };
+        let peek = self.peek_skip_attribute()?;
 
+        println!("peek {}", peek);
         match peek {
             b'#' => {
                 self.reader.eat_char();
@@ -331,7 +329,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+        let peek = self.peek_skip_attribute()?;
 
         match peek {
             b':' => {
@@ -380,7 +378,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+        let peek = self.peek_skip_attribute()?;
 
         match peek {
             b':' => {
@@ -410,7 +408,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+        let peek = self.peek_skip_attribute()?;
 
         match peek {
             b':' => {
@@ -450,7 +448,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+        let peek = self.peek_skip_attribute()?;
 
         match peek {
             b'+' => {
@@ -498,7 +496,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+        let peek = self.peek_skip_attribute()?;
 
         match peek {
             b'+' => {
@@ -541,7 +539,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+        let peek = self.peek_skip_attribute()?;
 
         match peek {
             // "_\r\n" => null
@@ -558,7 +556,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+        let peek = self.peek_skip_attribute()?;
 
         match peek {
             b'_' => {
@@ -684,7 +682,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+        let peek = self.peek_skip_attribute()?;
 
         match peek {
             b'%' => {
@@ -955,7 +953,11 @@ mod tests {
         let data = "|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n";
         let mut d = Deserializer::from_reader(Cursor::new(data));
         let value: (u64, u64) = Deserialize::deserialize(&mut d).unwrap();
-
         assert_eq!(value, (2039123 ,9543892));
+
+        let simple = "|1\r\n+hello\r\n+world\r\n#t\r\n";
+        let mut d = Deserializer::from_reader(Cursor::new(simple));
+        let value: bool = Deserialize::deserialize(&mut d).unwrap();
+        assert_eq!(value, true);
     }
 }
