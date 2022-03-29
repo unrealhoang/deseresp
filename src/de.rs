@@ -6,7 +6,7 @@ use std::{
 use num::{CheckedAdd, CheckedMul};
 use serde::Deserialize;
 
-use crate::{Error, Result, custom::owned::AttributeSkip};
+use crate::{Error, Result, types::AttributeSkip};
 
 pub struct Reader<R: Read> {
     r: io::Bytes<R>,
@@ -582,7 +582,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
         let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
 
         match name {
-            crate::custom::SIMPLE_ERROR_TOKEN => {
+            crate::types::SIMPLE_ERROR_TOKEN => {
                 if peek == b'-' {
                     self.reader.eat_char();
                     let bytes = self.parse_simple_string()?;
@@ -592,7 +592,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                     Err(Error::expected_marker("simple error"))
                 }
             }
-            crate::custom::BLOB_ERROR_TOKEN => {
+            crate::types::BLOB_ERROR_TOKEN => {
                 if peek == b'!' {
                     self.reader.eat_char();
                     let bytes = self.parse_blob_string()?;
@@ -602,7 +602,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                     Err(Error::expected_marker("blob error"))
                 }
             }
-            crate::custom::SIMPLE_STRING_TOKEN => {
+            crate::types::SIMPLE_STRING_TOKEN => {
                 if peek == b'+' {
                     self.reader.eat_char();
                     let bytes = self.parse_simple_string()?;
@@ -612,7 +612,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                     Err(Error::expected_marker("simple string"))
                 }
             }
-            crate::custom::BLOB_STRING_TOKEN => {
+            crate::types::BLOB_STRING_TOKEN => {
                 if peek == b'$' {
                     self.reader.eat_char();
                     let bytes = self.parse_blob_string()?;
@@ -622,7 +622,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                     Err(Error::expected_marker("blob string"))
                 }
             }
-            crate::custom::ATTRIBUTE_SKIP_TOKEN => {
+            crate::types::ATTRIBUTE_SKIP_TOKEN => {
                 if peek == b'|' {
                     self.reader.eat_char();
                     let len = self.reader.read_length()?;
@@ -803,7 +803,7 @@ mod tests {
 
     use serde::Deserialize;
 
-    use crate::custom::owned::{BlobError, BlobString, SimpleError, SimpleString};
+    use crate::types::owned::{BlobError, BlobString, SimpleError, SimpleString};
 
     use super::*;
 

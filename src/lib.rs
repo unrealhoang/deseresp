@@ -1,9 +1,9 @@
 mod de;
 mod error;
 mod ser;
-pub mod custom;
+pub mod types;
 
-pub use de::{Deserializer};
+pub use de::Deserializer;
 pub use error::{Error, Result};
 
 #[cfg(test)]
