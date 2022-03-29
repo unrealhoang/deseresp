@@ -4,8 +4,9 @@ use std::{
 };
 
 use num::{CheckedAdd, CheckedMul};
+use serde::Deserialize;
 
-use crate::{Error, Result};
+use crate::{Error, Result, custom::owned::AttributeSkip};
 
 pub struct Reader<R: Read> {
     r: io::Bytes<R>,
@@ -229,6 +230,23 @@ impl<R: Read> Deserializer<R> {
 
         Ok(val)
     }
+
+    fn skip_attribute(&mut self) -> Result<()> {
+        let _s: AttributeSkip = Deserialize::deserialize(self)?;
+
+        Ok(())
+    }
+
+    fn peek_skip_attribute(&mut self) -> Result<u8> {
+        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+
+        if peek == b'|' {
+            self.skip_attribute()?;
+            return self.reader.peek_char()?.ok_or_else(|| Error::eof());
+        }
+
+        Ok(peek)
+    }
 }
 
 impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R> {
@@ -257,7 +275,15 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
             b':' => self.deserialize_i64(visitor),
             // floating point
             b',' => self.deserialize_f64(visitor),
-            _ => Err(Error::expected_value("type header")),
+            // array
+            b'*' => self.deserialize_seq(visitor),
+            b'~' => self.deserialize_seq(visitor),
+            // map
+            b'%' => self.deserialize_map(visitor),
+            ch => {
+                println!("ch: {}", ch);
+                Err(Error::expected_value("type header"))
+            }
         }
     }
 
@@ -598,6 +624,16 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                     Err(Error::expected_marker("blob string"))
                 }
             }
+            crate::custom::ATTRIBUTE_SKIP_TOKEN => {
+                if peek == b'|' {
+                    self.reader.eat_char();
+                    let len = self.reader.read_length()?;
+                    self.reader.eat_crlf()?;
+                    visitor.visit_map(CountMapAccess::new(self, len))
+                } else {
+                    Err(Error::expected_marker("blob string"))
+                }
+            }
             _ => visitor.visit_newtype_struct(self),
         }
     }
@@ -606,7 +642,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+        let peek = self.peek_skip_attribute()?;
 
         match peek {
             b'*' => {
@@ -782,6 +818,10 @@ mod tests {
         let mut d = Deserializer::from_reader(Cursor::new(String::from("$11\r\nhello world\r\n")));
         let value: BlobString = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value.0, "hello world");
+
+        let mut d = Deserializer::from_reader(Cursor::new(String::from("+hello world\r\n")));
+        let value: Result<BlobString> = Deserialize::deserialize(&mut d);
+        assert!(matches!(value, Err(_)));
     }
 
     #[test]
@@ -898,5 +938,24 @@ mod tests {
                 second: 2.0
             }
         );
+    }
+
+    #[test]
+    fn test_ignore_attribute() {
+        // |1<CR><LF>
+        //     +key-popularity<CR><LF>
+        //     %2<CR><LF>
+        //         $1<CR><LF>
+        //         a<CR><LF>
+        //         ,0.1923<CR><LF>
+        //         $1<CR><LF>
+        //         b<CR><LF>
+        //         ,0.0012<CR><LF>
+        //
+        let data = "|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n";
+        let mut d = Deserializer::from_reader(Cursor::new(data));
+        let value: (u64, u64) = Deserialize::deserialize(&mut d).unwrap();
+
+        assert_eq!(value, (2039123 ,9543892));
     }
 }
