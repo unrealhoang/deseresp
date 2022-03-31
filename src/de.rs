@@ -16,6 +16,7 @@ pub struct Reader<R: Read> {
 pub struct Deserializer<R: Read> {
     reader: Reader<R>,
     buf: Vec<u8>,
+    skip_attribute: bool,
 }
 
 impl<R> Reader<R>
@@ -200,6 +201,7 @@ impl<R: Read> Deserializer<R> {
         Deserializer {
             reader: Reader::from_reader(r),
             buf: Vec::new(),
+            skip_attribute: true,
         }
     }
 
@@ -240,7 +242,7 @@ impl<R: Read> Deserializer<R> {
     fn peek_skip_attribute(&mut self) -> Result<u8> {
         let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
 
-        if peek == b'|' {
+        if peek == b'|' && self.skip_attribute {
             self.skip_attribute()?;
             return self.reader.peek_char()?.ok_or_else(|| Error::eof());
         }
@@ -280,6 +282,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
             b'~' => self.deserialize_seq(visitor),
             // map
             b'%' => self.deserialize_map(visitor),
+            b'|' => self.deserialize_map(visitor),
             ch => {
                 println!("ch: {}", ch);
                 Err(Error::expected_value("type header"))
@@ -668,14 +671,30 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
 
     fn deserialize_tuple_struct<V>(
         self,
-        _name: &'static str,
+        name: &'static str,
         _len: usize,
         visitor: V,
     ) -> Result<V::Value>
     where
         V: serde::de::Visitor<'de>,
     {
-        self.deserialize_seq(visitor)
+        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+
+        match name {
+            crate::types::ATTRIBUTE_TOKEN => {
+                if peek == b'|' {
+                    let last_skip = self.skip_attribute;
+                    self.skip_attribute = false;
+                    let r = visitor.visit_seq(CountSeqAccess::new(self, 2));
+                    self.skip_attribute = last_skip;
+                    r
+                } else {
+                    Err(Error::expected_marker("attribute"))
+                }
+            }
+            _ => self.deserialize_seq(visitor)
+        }
+
     }
 
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value>
@@ -690,6 +709,16 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                 let len = self.reader.read_length()?;
                 self.reader.eat_crlf()?;
                 visitor.visit_map(CountMapAccess::new(self, len))
+            }
+            b'|' => {
+                self.reader.eat_char();
+                let len = self.reader.read_length()?;
+                self.reader.eat_crlf()?;
+                let last_skip = self.skip_attribute;
+                self.skip_attribute = false;
+                let r = visitor.visit_map(CountMapAccess::new(self, len));
+                self.skip_attribute = last_skip;
+                r
             }
             _ => Err(Error::expected_marker("map")),
         }
@@ -803,7 +832,7 @@ mod tests {
 
     use serde::Deserialize;
 
-    use crate::types::owned::{BlobError, BlobString, SimpleError, SimpleString};
+    use crate::types::{owned::{BlobError, BlobString, SimpleError, SimpleString}, WithAttribute};
 
     use super::*;
 
@@ -960,4 +989,39 @@ mod tests {
         let value: bool = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, true);
     }
+
+    #[test]
+    fn test_deserialize_attribute() {
+        // |1<CR><LF>
+        //     +key-popularity<CR><LF>
+        //     %2<CR><LF>
+        //         $1<CR><LF>
+        //         a<CR><LF>
+        //         ,0.1923<CR><LF>
+        //         $1<CR><LF>
+        //         b<CR><LF>
+        //         ,0.0012<CR><LF>
+        //
+        let data = "|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n";
+        let mut d = Deserializer::from_reader(Cursor::new(data));
+        #[derive(Deserialize)]
+        struct KeyPop {
+            a: f64,
+            b: f64,
+        }
+        #[derive(Deserialize)]
+        struct Meta {
+            #[serde(rename = "key-popularity")]
+            key_popularity: KeyPop
+        }
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct Pair(u64, u64);
+
+        let with_attr: WithAttribute<Meta, Pair> = Deserialize::deserialize(&mut d).unwrap();
+        let (attr, value) = with_attr.into_inner();
+        assert_eq!(value, Pair(2039123 ,9543892));
+        assert_eq!(attr.key_popularity.a, 0.1923);
+        assert_eq!(attr.key_popularity.b, 0.0012);
+    }
+
 }

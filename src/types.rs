@@ -3,8 +3,11 @@ pub const BLOB_ERROR_TOKEN: &str = "$BulkError";
 pub const SIMPLE_STRING_TOKEN: &str = "$SimpleString";
 pub const BLOB_STRING_TOKEN: &str = "$BulkString";
 pub const ATTRIBUTE_SKIP_TOKEN: &str = "$AttributeSkip";
+pub const ATTRIBUTE_TOKEN: &str = "$WithAttribute";
 
-use serde::{Deserialize, de::Visitor};
+use std::marker::PhantomData;
+
+use serde::{Deserialize, de::{Visitor, DeserializeOwned, self}};
 pub mod owned {
     use serde::de::Visitor;
 
@@ -127,7 +130,6 @@ impl<'de> Visitor<'de> for AnySkipVisitor {
         A: serde::de::MapAccess<'de>,
     {
         while let Some(_s) = map.next_key::<AnySkip>()? {
-            println!("skipped");
             map.next_value::<AnySkip>()?;
         }
 
@@ -159,3 +161,59 @@ impl<'de> Deserialize<'de> for AnySkip {
     }
 }
 
+pub struct WithAttribute<A, V> {
+    attr: A,
+    value: V
+}
+struct WithAttributeVisitor<A, V>(PhantomData<(A, V)>);
+
+impl<A, V> WithAttribute<A, V> {
+    pub fn into_inner(self) -> (A, V) {
+        (self.attr, self.value)
+    }
+
+    pub fn into_attribute(self) -> A {
+        self.attr
+    }
+
+    pub fn into_value(self) -> V {
+        self.value
+    }
+}
+
+impl<'de, A, V> Visitor<'de> for WithAttributeVisitor<A, V>
+where
+    A: DeserializeOwned,
+    V: DeserializeOwned,
+{
+    type Value = WithAttribute<A, V>;
+
+    fn visit_seq<S>(self, mut seq: S) -> Result<Self::Value, S::Error>
+    where
+        S: serde::de::SeqAccess<'de>,
+    {
+        let attr = seq.next_element::<A>()?
+            .ok_or_else(|| de::Error::invalid_length(0, &"2 expected"))?;
+        let value = seq.next_element::<V>()?
+            .ok_or_else(|| de::Error::invalid_length(1, &"2 expected"))?;
+        Ok(WithAttribute::<A, V> { attr, value })
+
+    }
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "expect seq (attribute, value)")
+    }
+}
+
+impl<'de, A, V> Deserialize<'de> for WithAttribute<A, V>
+where
+    A: DeserializeOwned,
+    V: DeserializeOwned,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>
+    {
+        deserializer.deserialize_tuple_struct(ATTRIBUTE_TOKEN, 2, WithAttributeVisitor::<A, V>(PhantomData))
+    }
+}

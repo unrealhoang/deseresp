@@ -8,6 +8,7 @@ pub enum Error {
     UnexpectedValue(&'static str),
     UTF8(usize),
     Parse,
+    Custom(String)
 }
 
 impl Error {
@@ -59,7 +60,7 @@ impl serde::de::Error for Error {
     where
         T: std::fmt::Display
     {
-        Error::InvalidBytes
+        Error::Custom(msg.to_string())
     }
 }
 
