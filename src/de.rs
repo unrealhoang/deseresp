@@ -283,8 +283,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
             // map
             b'%' => self.deserialize_map(visitor),
             b'|' => self.deserialize_map(visitor),
-            ch => {
-                println!("ch: {}", ch);
+            _ => {
                 Err(Error::expected_value("type header"))
             }
         }
@@ -296,7 +295,6 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     {
         let peek = self.peek_skip_attribute()?;
 
-        println!("peek {}", peek);
         match peek {
             b'#' => {
                 self.reader.eat_char();
@@ -715,7 +713,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                 let len = self.reader.read_length()?;
                 self.reader.eat_crlf()?;
                 let last_skip = self.skip_attribute;
-                self.skip_attribute = false;
+                self.skip_attribute = true;
                 let r = visitor.visit_map(CountMapAccess::new(self, len));
                 self.skip_attribute = last_skip;
                 r
@@ -1024,4 +1022,24 @@ mod tests {
         assert_eq!(attr.key_popularity.b, 0.0012);
     }
 
+    #[test]
+    fn test_nested_deserialize_attribute() {
+        //  |1\r\n
+        //      +a\r\n
+        //      |1\r\n
+        //          +b\r\n
+        //          +c\r\n
+        //      :200\r\n
+        //  :300\r\n
+        let nested_attr_data = "|1\r\n+a\r\n|1\r\n+b\r\n+c\r\n:200\r\n:300\r\n";
+        let mut d = Deserializer::from_reader(Cursor::new(nested_attr_data));
+        #[derive(Deserialize)]
+        struct Test {
+            a: usize
+        }
+        let with_attr: WithAttribute<Test, usize> = Deserialize::deserialize(&mut d).unwrap();
+        let (attr, value) = with_attr.into_inner();
+        assert_eq!(attr.a, 200);
+        assert_eq!(value, 300);
+    }
 }

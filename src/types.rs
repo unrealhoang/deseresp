@@ -196,8 +196,8 @@ where
             .ok_or_else(|| de::Error::invalid_length(0, &"2 expected"))?;
         let value = seq.next_element::<V>()?
             .ok_or_else(|| de::Error::invalid_length(1, &"2 expected"))?;
-        Ok(WithAttribute::<A, V> { attr, value })
 
+        Ok(WithAttribute::<A, V> { attr, value })
     }
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
