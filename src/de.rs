@@ -235,6 +235,87 @@ impl<'de, R: Read> Reader<'de> for ReadReader<R> {
     }
 }
 
+pub struct RefReader<'de, R: AsRef<[u8]> + ?Sized> {
+    slice: &'de R,
+    buf: &'de [u8],
+}
+
+impl<'de, R: AsRef<[u8]> + ?Sized> RefReader<'de, R> {
+    pub fn from_slice(slice: &'de R) -> Self {
+        let buf = slice.as_ref();
+        RefReader {
+            slice,
+            buf
+        }
+    }
+}
+
+fn read_slice_ident<'de>(buf: &mut &'de [u8], ident: &[u8]) -> Result<()> {
+    if buf.starts_with(ident) {
+        *buf = &buf[ident.len()..];
+        Ok(())
+    } else {
+        Err(Error::expected_value("ident"))
+    }
+}
+
+impl<'de, R: AsRef<[u8]> + ?Sized> Reader<'de> for RefReader<'de, R> {
+    fn read_slice<'a>(
+        &'a mut self,
+        len: usize,
+        consume_crlf: bool,
+    ) -> Result<Reference<'de, 'a, [u8]>> {
+        if len > self.buf.len() {
+            return Err(Error::eof());
+        }
+
+        let (a, b) = self.buf.split_at(len);
+        self.buf = b;
+        if consume_crlf {
+            read_slice_ident(&mut self.buf, b"\r\n")?;
+        }
+
+        Ok(Reference::Borrowed(a))
+    }
+
+    fn read_slice_until<'a, F>(
+        &'a mut self,
+        until_fn: F,
+        consume_crlf: bool,
+    ) -> Result<Reference<'de, 'a, [u8]>>
+    where
+        F: Fn(u8) -> bool {
+        let len = self.buf.iter().position(|ch| until_fn(*ch))
+            .ok_or_else(|| Error::eof())?;
+
+        let (a, b) = self.buf.split_at(len);
+        self.buf = b;
+        if consume_crlf {
+            read_slice_ident(&mut self.buf, b"\r\n")?;
+        }
+
+        Ok(Reference::Borrowed(a))
+    }
+
+    fn peek_u8(&mut self) -> Result<Option<u8>> {
+        Ok(self.buf.iter().copied().next())
+    }
+
+    fn read_u8(&mut self) -> Result<Option<u8>> {
+        if self.buf.is_empty() {
+            return Ok(None);
+        }
+        let ch = self.buf[0];
+        self.buf = &self.buf[1..];
+
+        Ok(Some(ch))
+    }
+
+    fn read_ident(&mut self, ident: &[u8]) -> Result<()> {
+        read_slice_ident(&mut self.buf, ident)
+    }
+}
+
 pub struct Deserializer<R>
 {
     reader: R,
@@ -260,6 +341,22 @@ impl<R: Read> Deserializer<ReadReader<R>> {
             reader: ReadReader::from_read(r),
             skip_attribute: true,
         }
+    }
+}
+
+impl<'de, R> Deserializer<RefReader<'de, R>>
+where
+    R: AsRef<[u8]> + ?Sized,
+{
+    pub fn from_slice(slice: &'de R) -> Self {
+        Deserializer {
+            reader: RefReader::from_slice(slice),
+            skip_attribute: true,
+        }
+    }
+
+    pub fn get_ref(&self) -> &R {
+        self.reader.slice
     }
 }
 
@@ -909,135 +1006,155 @@ mod tests {
 
     use super::*;
 
+    fn test_deserialize<'de, T, F>(input: &'de [u8], test_fn: F)
+    where
+        T: Deserialize<'de>,
+        F: Fn(T)
+    {
+        let mut read_d = Deserializer::from_read(Cursor::new(Vec::from(input)));
+        let value: T = Deserialize::deserialize(&mut read_d).unwrap();
+        test_fn(value);
+
+        let mut slice_d = Deserializer::from_slice(input);
+        let value: T = Deserialize::deserialize(&mut slice_d).unwrap();
+        test_fn(value);
+    }
+
+    fn test_deserialize_result<'de, T, F>(input: &'de [u8], test_fn: F)
+    where
+        T: Deserialize<'de>,
+        F: Fn(Result<T>)
+    {
+        let mut read_d = Deserializer::from_read(Cursor::new(Vec::from(input)));
+        let value: Result<T> = Deserialize::deserialize(&mut read_d);
+        test_fn(value);
+
+        let mut slice_d = Deserializer::from_slice(input);
+        let value: Result<T> = Deserialize::deserialize(&mut slice_d);
+        test_fn(value);
+    }
+
     #[test]
     fn test_blob_string() {
-        let mut d = Deserializer::from_read(Cursor::new(String::from("$11\r\nhello world\r\n")));
-        let value: String = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, "hello world");
+        test_deserialize(b"$11\r\nhello world\r\n", |value: String| {
+            assert_eq!(value, "hello world");
+        });
 
-        let mut d = Deserializer::from_read(Cursor::new(String::from("$11\r\nhello world\r\n")));
-        let value: BlobString = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value.0, "hello world");
+        test_deserialize(b"$11\r\nhello world\r\n", |value: BlobString| {
+            assert_eq!(value.0, "hello world");
+        });
 
-        let mut d = Deserializer::from_read(Cursor::new(String::from("+hello world\r\n")));
-        let value: Result<BlobString> = Deserialize::deserialize(&mut d);
-        assert!(matches!(value, Err(_)));
+        test_deserialize_result(b"+hello world\r\n", |value: Result<BlobString>| {
+            assert!(matches!(value, Err(_)));
+        });
     }
 
     #[test]
     fn test_simple_string() {
-        let mut d = Deserializer::from_read(Cursor::new(String::from("+hello world\r\n")));
-        let value: String = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, "hello world");
+        test_deserialize(b"+hello world\r\n", |value: String| {
+            assert_eq!(value, "hello world");
+        });
 
-        let mut d = Deserializer::from_read(Cursor::new(String::from("+hello world\r\n")));
-        let value: SimpleString = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value.0, "hello world");
+        test_deserialize(b"+hello world\r\n", |value: SimpleString| {
+            assert_eq!(value.0, "hello world");
+        });
     }
 
     #[test]
     fn test_blob_error() {
-        let mut d =
-            Deserializer::from_read(Cursor::new(String::from("!15\r\nERR hello world\r\n")));
-        let value: BlobError = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value.0, "ERR hello world");
+        test_deserialize(b"!15\r\nERR hello world\r\n", |value: BlobError| {
+            assert_eq!(value.0, "ERR hello world");
+        });
     }
 
     #[test]
     fn test_simple_error() {
-        let mut d = Deserializer::from_read(Cursor::new(String::from("-ERR hello world\r\n")));
-        let value: SimpleError = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value.0, "ERR hello world");
+        test_deserialize(b"-ERR hello world\r\n", |value: SimpleError| {
+            assert_eq!(value.0, "ERR hello world");
+        });
     }
 
     #[test]
     fn test_bool() {
-        let mut d = Deserializer::from_read(Cursor::new(String::from("#t\r\n")));
-        let value: bool = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, true);
+        test_deserialize(b"#t\r\n", |value: bool| {
+            assert_eq!(value, true);
+        });
 
-        let mut d = Deserializer::from_read(Cursor::new(String::from("#f\r\n")));
-        let value: bool = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, false);
+        test_deserialize(b"#f\r\n", |value: bool| {
+            assert_eq!(value, false);
+        });
     }
 
     #[test]
     fn test_number() {
-        let mut d = Deserializer::from_read(Cursor::new(String::from(":12345\r\n")));
-        let value: i64 = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, 12345);
+        test_deserialize(b":12345\r\n", |value: i64| {
+            assert_eq!(value, 12345);
+        });
 
-        let mut d = Deserializer::from_read(Cursor::new(String::from(":-12345\r\n")));
-        let value: i64 = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, -12345);
+        test_deserialize(b":-12345\r\n", |value: i64| {
+            assert_eq!(value, -12345);
+        });
     }
 
     #[test]
     fn test_double() {
-        let mut d = Deserializer::from_read(Cursor::new(String::from(",1.23\r\n")));
-        let value: f64 = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, 1.23);
+        test_deserialize(b",1.23\r\n", |value: f64| {
+            assert_eq!(value, 1.23);
+        });
 
-        let mut d = Deserializer::from_read(Cursor::new(String::from(",10\r\n")));
-        let value: f64 = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, 10.0);
+        test_deserialize(b",10\r\n", |value: f64| {
+            assert_eq!(value, 10.0);
+        });
 
-        let mut d = Deserializer::from_read(Cursor::new(String::from(",inf\r\n")));
-        let value: f64 = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, f64::INFINITY);
+        test_deserialize(b",inf\r\n", |value: f64| {
+            assert_eq!(value, f64::INFINITY);
+        });
 
-        let mut d = Deserializer::from_read(Cursor::new(String::from(",-inf\r\n")));
-        let value: f64 = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, f64::NEG_INFINITY);
+        test_deserialize(b",-inf\r\n", |value: f64| {
+            assert_eq!(value, f64::NEG_INFINITY);
+        });
     }
 
     #[test]
     fn test_char() {
-        let mut d = Deserializer::from_read(Cursor::new(String::from("+a\r\n")));
-        let value: char = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, 'a');
+        test_deserialize(b"+a\r\n", |value: char| {
+            assert_eq!(value, 'a');
+        });
     }
 
     #[test]
     fn test_seq() {
-        let mut d =
-            Deserializer::from_read(Cursor::new(String::from("*3\r\n:1\r\n:2\r\n:3\r\n")));
-        let value: Vec<u64> = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, [1, 2, 3]);
+        test_deserialize(b"*3\r\n:1\r\n:2\r\n:3\r\n", |value: Vec<u64>| {
+            assert_eq!(value, [1, 2, 3]);
+        });
 
-        let mut d = Deserializer::from_read(Cursor::new(String::from(
-            "*2\r\n*3\r\n:1\r\n$5\r\nhello\r\n:2\r\n#f\r\n",
-        )));
-        let value: ((u64, String, u64), bool) = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, ((1, String::from("hello"), 2), false));
+        test_deserialize(b"*2\r\n*3\r\n:1\r\n$5\r\nhello\r\n:2\r\n#f\r\n", |value: ((u64, String, u64), bool)| {
+            assert_eq!(value, ((1, String::from("hello"), 2), false));
+        });
     }
 
     #[test]
     fn test_map() {
-        let mut d = Deserializer::from_read(Cursor::new(String::from(
-            "%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n",
-        )));
-        let value: HashMap<String, usize> = Deserialize::deserialize(&mut d).unwrap();
-        let kv = value.into_iter().collect::<Vec<_>>();
-        assert!(kv.contains(&("first".to_string(), 1)));
-        assert!(kv.contains(&("second".to_string(), 2)));
+        test_deserialize(b"%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n", |value: HashMap<String, usize>| {
+            let kv = value.into_iter().collect::<Vec<_>>();
+            assert!(kv.contains(&("first".to_string(), 1)));
+            assert!(kv.contains(&("second".to_string(), 2)));
+        });
 
         #[derive(PartialEq, Deserialize, Debug)]
         struct CustomMap {
             first: usize,
             second: f64,
         }
-        let mut d = Deserializer::from_read(Cursor::new(String::from(
-            "%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n",
-        )));
-        let value: CustomMap = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(
-            value,
-            CustomMap {
-                first: 1,
-                second: 2.0
-            }
-        );
+        test_deserialize(b"%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n", |value: CustomMap| {
+            assert_eq!(
+                value,
+                CustomMap {
+                    first: 1,
+                    second: 2.0
+                }
+            );
+        });
     }
 
     #[test]
@@ -1052,15 +1169,13 @@ mod tests {
         //         b<CR><LF>
         //         ,0.0012<CR><LF>
         //
-        let data = "|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n";
-        let mut d = Deserializer::from_read(Cursor::new(data));
-        let value: (u64, u64) = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, (2039123, 9543892));
+        test_deserialize(b"|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n", |value: (u64, u64)| {
+            assert_eq!(value, (2039123, 9543892));
+        });
 
-        let simple = "|1\r\n+hello\r\n+world\r\n#t\r\n";
-        let mut d = Deserializer::from_read(Cursor::new(simple));
-        let value: bool = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, true);
+        test_deserialize(b"|1\r\n+hello\r\n+world\r\n#t\r\n", |value: bool| {
+            assert_eq!(value, true);
+        });
     }
 
     #[test]
@@ -1075,8 +1190,6 @@ mod tests {
         //         b<CR><LF>
         //         ,0.0012<CR><LF>
         //
-        let data = "|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n";
-        let mut d = Deserializer::from_read(Cursor::new(data));
         #[derive(Deserialize)]
         struct KeyPop {
             a: f64,
@@ -1089,12 +1202,12 @@ mod tests {
         }
         #[derive(Deserialize, PartialEq, Eq, Debug)]
         struct Pair(u64, u64);
-
-        let with_attr: WithAttribute<Meta, Pair> = Deserialize::deserialize(&mut d).unwrap();
-        let (attr, value) = with_attr.into_inner();
-        assert_eq!(value, Pair(2039123, 9543892));
-        assert_eq!(attr.key_popularity.a, 0.1923);
-        assert_eq!(attr.key_popularity.b, 0.0012);
+        test_deserialize(b"|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n", |with_attr: WithAttribute<Meta, Pair>| {
+            let (attr, value) = with_attr.into_inner();
+            assert_eq!(value, Pair(2039123, 9543892));
+            assert_eq!(attr.key_popularity.a, 0.1923);
+            assert_eq!(attr.key_popularity.b, 0.0012);
+        });
     }
 
     #[test]
@@ -1106,15 +1219,14 @@ mod tests {
         //          +c\r\n
         //      :200\r\n
         //  :300\r\n
-        let nested_attr_data = "|1\r\n+a\r\n|1\r\n+b\r\n+c\r\n:200\r\n:300\r\n";
-        let mut d = Deserializer::from_read(Cursor::new(nested_attr_data));
         #[derive(Deserialize)]
         struct Test {
             a: usize,
         }
-        let with_attr: WithAttribute<Test, usize> = Deserialize::deserialize(&mut d).unwrap();
-        let (attr, value) = with_attr.into_inner();
-        assert_eq!(attr.a, 200);
-        assert_eq!(value, 300);
+        test_deserialize(b"|1\r\n+a\r\n|1\r\n+b\r\n+c\r\n:200\r\n:300\r\n", |with_attr: WithAttribute<Test, usize>| {
+            let (attr, value) = with_attr.into_inner();
+            assert_eq!(attr.a, 200);
+            assert_eq!(value, 300);
+        });
     }
 }
