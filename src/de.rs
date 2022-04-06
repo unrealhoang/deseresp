@@ -6,51 +6,29 @@ use std::{
 use num::{CheckedAdd, CheckedMul};
 use serde::Deserialize;
 
-use crate::{Error, Result, types::AttributeSkip};
+use crate::{types::AttributeSkip, Error, Result};
 
-pub struct Reader<R: Read> {
-    r: io::Bytes<R>,
-    ch: Option<u8>,
+pub enum Reference<'b, 'c, T: ?Sized + 'static> {
+    Borrowed(&'b T),
+    Copied(&'c T),
 }
 
-pub struct Deserializer<R: Read> {
-    reader: Reader<R>,
-    buf: Vec<u8>,
-    skip_attribute: bool,
-}
+pub trait Reader<'de> {
+    fn read_slice<'a>(
+        &'a mut self,
+        len: usize,
+        consume_crlf: bool,
+    ) -> Result<Reference<'de, 'a, [u8]>>;
+    fn read_slice_until<'a, F>(
+        &'a mut self,
+        until_fn: F,
+        consume_crlf: bool,
+    ) -> Result<Reference<'de, 'a, [u8]>>
+    where
+        F: Fn(u8) -> bool;
 
-impl<R> Reader<R>
-where
-    R: Read,
-{
-    pub fn from_reader(r: R) -> Self {
-        Reader {
-            r: r.bytes(),
-            ch: None,
-        }
-    }
-
-    fn eat_char(&mut self) {
-        self.ch = None;
-    }
-
-    fn next_char(&mut self) -> Result<Option<u8>> {
-        self.r
-            .next()
-            .transpose()
-            .map_err(|e| Error::io(e))
-            .map(|ch| {
-                self.ch = ch;
-                ch
-            })
-    }
-
-    fn peek_char(&mut self) -> Result<Option<u8>> {
-        match self.ch {
-            Some(ch) => Ok(Some(ch)),
-            None => self.next_char(),
-        }
-    }
+    fn peek_u8(&mut self) -> Result<Option<u8>>;
+    fn read_u8(&mut self) -> Result<Option<u8>>;
 
     fn read_length(&mut self) -> Result<usize> {
         self.read_unsigned()
@@ -60,17 +38,20 @@ where
     where
         T: CheckedMul + CheckedAdd + From<u8>,
     {
-        let peek = self.peek_char()?.ok_or_else(|| Error::eof())?;
-        self.eat_char();
+        let peek = self.peek_u8()?.ok_or_else(|| Error::eof())?;
         match peek {
-            b'0' => match self.peek_char()? {
-                Some(b'0'..=b'9') => Err(Error::unexpected_value("number after 0")),
-                _ => Ok(T::from(0)),
-            },
+            b'0' => {
+                self.read_u8()?;
+                match self.peek_u8()? {
+                    Some(b'0'..=b'9') => Err(Error::unexpected_value("number after 0")),
+                    _ => Ok(T::from(0)),
+                }
+            }
             ch @ b'1'..=b'9' => {
+                self.read_u8()?;
                 let mut num = T::from(ch - b'0');
                 loop {
-                    match self.peek_char()? {
+                    match self.peek_u8()? {
                         Some(c @ b'0'..=b'9') => {
                             let digit = T::from(c - b'0');
                             let ten = T::from(10);
@@ -83,7 +64,7 @@ where
                             } else {
                                 return Err(Error::overflow());
                             }
-                            self.eat_char();
+                            self.read_u8()?;
                         }
                         _ => {
                             return Ok(num);
@@ -95,60 +76,16 @@ where
         }
     }
 
-    fn read_str_len(&mut self, len: usize, buf: &mut Vec<u8>) -> Result<()> {
-        for _count in 0..len {
-            match self.peek_char()? {
-                Some(c) => {
-                    self.eat_char();
-                    buf.push(c);
-                }
-                None => return Err(Error::eof()),
-            }
-        }
-
-        Ok(())
-    }
-
-    fn read_non_crlf_str(&mut self, buf: &mut Vec<u8>) -> Result<()> {
-        loop {
-            match self.peek_char()? {
-                Some(ch) if ch != b'\r' && ch != b'\n' => {
-                    self.eat_char();
-                    buf.push(ch);
-                }
-                None => return Err(Error::eof()),
-                _ => break,
-            }
-        }
-
-        Ok(())
-    }
-
-    fn parse_ident(&mut self, ident: &[u8]) -> Result<()> {
-        for expected in ident {
-            match self.peek_char()? {
-                None => return Err(Error::eof()),
-                Some(ch) => {
-                    if ch != *expected {
-                        return Err(Error::expected_value("ident"));
-                    }
-                    self.eat_char();
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn read_double(&mut self, buf: &mut Vec<u8>) -> Result<f64> {
+    fn read_double(&mut self) -> Result<f64> {
+        let mut buf = Vec::new();
         let mut negative = false;
         let mut inf = false;
-        if let Some(b'-') = self.peek_char()? {
+        if let Some(b'-') = self.peek_u8()? {
             negative = true;
-            self.eat_char();
+            self.read_u8()?;
         }
-        if let Some(b'i') = self.peek_char()? {
-            self.parse_ident(b"inf")?;
+        if let Some(b'i') = self.peek_u8()? {
+            self.read_ident(b"inf")?;
             inf = true;
         }
         if inf {
@@ -160,9 +97,9 @@ where
         }
 
         loop {
-            match self.peek_char()? {
+            match self.peek_u8()? {
                 Some(ch) if ch != b'\r' && ch != b'\n' => {
-                    self.eat_char();
+                    self.read_u8()?;
                     buf.push(ch);
                 }
                 None => return Err(Error::eof()),
@@ -176,59 +113,177 @@ where
     }
 
     fn read_bool(&mut self) -> Result<bool> {
-        match self.peek_char()? {
+        match self.peek_u8()? {
             Some(b't') => {
-                self.eat_char();
-                self.eat_crlf()?;
+                self.read_u8()?;
+                self.read_crlf()?;
                 Ok(true)
             }
             Some(b'f') => {
-                self.eat_char();
-                self.eat_crlf()?;
+                self.read_u8()?;
+                self.read_crlf()?;
                 Ok(false)
             }
             _ => Err(Error::expected_value("bool")),
         }
     }
 
-    fn eat_crlf(&mut self) -> Result<()> {
-        self.parse_ident(b"\r\n")
+    fn read_ident(&mut self, ident: &[u8]) -> Result<()>;
+
+    fn read_crlf(&mut self) -> Result<()> {
+        self.read_ident(b"\r\n")
     }
 }
 
-impl<R: Read> Deserializer<R> {
-    pub fn from_reader(r: R) -> Self {
-        Deserializer {
-            reader: Reader::from_reader(r),
-            buf: Vec::new(),
-            skip_attribute: true,
+pub struct ReadReader<R: Read> {
+    r: io::Bytes<R>,
+    ch: Option<u8>,
+    buf: Vec<u8>,
+}
+
+fn peek_u8<R: Read>(r: &mut io::Bytes<R>, ch: &mut Option<u8>) -> Result<Option<u8>> {
+    match ch {
+        Some(next) => Ok(Some(*next)),
+        None => read_u8(r, ch),
+    }
+}
+
+fn read_u8<R: Read>(r: &mut io::Bytes<R>, ch: &mut Option<u8>) -> Result<Option<u8>> {
+    r
+        .next()
+        .transpose()
+        .map_err(|e| Error::io(e))
+        .map(|next| {
+            *ch = next;
+            next
+        })
+}
+
+fn read_ident<R: Read>(r: &mut io::Bytes<R>, ch: &mut Option<u8>, ident: &[u8]) -> Result<()> {
+    for expected in ident {
+        match peek_u8(r, ch)? {
+            None => return Err(Error::eof()),
+            Some(next) => {
+                if next != *expected {
+                    return Err(Error::expected_value("ident"));
+                }
+                read_u8(r, ch)?;
+            }
         }
     }
 
-    fn parse_blob_string(&mut self) -> Result<&[u8]> {
+    Ok(())
+}
+
+impl<'de, R: Read> Reader<'de> for ReadReader<R> {
+    fn read_slice<'a>(
+        &'a mut self,
+        len: usize,
+        consume_crlf: bool,
+    ) -> Result<Reference<'de, 'a, [u8]>> {
         self.buf.clear();
+        for _count in 0..len {
+            let ch = peek_u8(&mut self.r, &mut self.ch)?
+                .ok_or_else(|| Error::eof())?;
+            self.buf.push(ch);
+            read_u8(&mut self.r, &mut self.ch)?;
+        }
 
-        let len = self.reader.read_length()?;
-        self.reader.eat_crlf()?;
+        if consume_crlf {
+            read_ident(&mut self.r, &mut self.ch, b"\r\n")?;
+        }
 
-        self.reader.read_str_len(len, &mut self.buf)?;
-        self.reader.eat_crlf()?;
-
-        Ok(&self.buf[..])
+        Ok(Reference::Copied(&self.buf[..]))
     }
 
-    fn parse_simple_string(&mut self) -> Result<&[u8]> {
+    fn read_slice_until<'a, F>(
+        &'a mut self,
+        until_fn: F,
+        consume_crlf: bool,
+    ) -> Result<Reference<'de, 'a, [u8]>>
+    where
+        F: Fn(u8) -> bool
+    {
         self.buf.clear();
-        self.reader.read_non_crlf_str(&mut self.buf)?;
-        self.reader.eat_crlf()?;
+        loop {
+            let ch = peek_u8(&mut self.r, &mut self.ch)?
+                .ok_or_else(|| Error::eof())?;
+            if until_fn(ch) {
+                break
+            }
+            self.buf.push(ch);
+            read_u8(&mut self.r, &mut self.ch)?;
+        }
 
-        Ok(&self.buf[..])
+        if consume_crlf {
+            read_ident(&mut self.r, &mut self.ch, b"\r\n")?;
+        }
+
+        Ok(Reference::Copied(&self.buf[..]))
+    }
+
+    fn peek_u8(&mut self) -> Result<Option<u8>> {
+        peek_u8(&mut self.r, &mut self.ch)
+    }
+
+    fn read_u8(&mut self) -> Result<Option<u8>> {
+        read_u8(&mut self.r, &mut self.ch)
+    }
+
+    fn read_ident(&mut self, ident: &[u8]) -> Result<()> {
+        read_ident(&mut self.r, &mut self.ch, ident)
+    }
+}
+
+pub struct Deserializer<R>
+{
+    reader: R,
+    skip_attribute: bool,
+}
+
+impl<R> ReadReader<R>
+where
+    R: Read,
+{
+    fn from_read(r: R) -> Self {
+        ReadReader {
+            r: r.bytes(),
+            ch: None,
+            buf: Vec::new(),
+        }
+    }
+}
+
+impl<R: Read> Deserializer<ReadReader<R>> {
+    pub fn from_read(r: R) -> Self {
+        Deserializer {
+            reader: ReadReader::from_read(r),
+            skip_attribute: true,
+        }
+    }
+}
+
+impl<'de, R: Reader<'de>> Deserializer<R> {
+    fn parse_blob_string<'a>(&'a mut self) -> Result<Reference<'de, 'a, [u8]>> {
+        let len = self.reader.read_length()?;
+        self.reader.read_crlf()?;
+
+        let slice = self.reader
+            .read_slice(len, true)?;
+
+        Ok(slice)
+    }
+
+    fn parse_simple_string<'a>(&'a mut self) -> Result<Reference<'de, 'a, [u8]>> {
+        let slice = self.reader
+            .read_slice_until(|ch| ch == b'\r' || ch == b'\n', true)?;
+
+        Ok(slice)
     }
 
     fn parse_double(&mut self) -> Result<f64> {
-        self.buf.clear();
-        let val = self.reader.read_double(&mut self.buf)?;
-        self.reader.eat_crlf()?;
+        let val = self.reader.read_double()?;
+        self.reader.read_crlf()?;
 
         Ok(val)
     }
@@ -240,18 +295,47 @@ impl<R: Read> Deserializer<R> {
     }
 
     fn peek_skip_attribute(&mut self) -> Result<u8> {
-        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+        let peek = self.reader.peek_u8()?.ok_or_else(|| Error::eof())?;
 
         if peek == b'|' && self.skip_attribute {
             self.skip_attribute()?;
-            return self.reader.peek_char()?.ok_or_else(|| Error::eof());
+            return self.reader.peek_u8()?.ok_or_else(|| Error::eof());
         }
 
         Ok(peek)
     }
 }
 
-impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R> {
+fn visit_ref_bytes<'de, 'a, V>(r: Reference<'de, 'a, [u8]>, visitor: V) -> Result<V::Value>
+where
+    V: serde::de::Visitor<'de>
+{
+    match r {
+        Reference::Copied(s) => visitor.visit_bytes(s),
+        Reference::Borrowed(s) => visitor.visit_borrowed_bytes(s),
+    }
+}
+
+fn visit_ref_str<'de, 'a, V>(r: Reference<'de, 'a, [u8]>, visitor: V) -> Result<V::Value>
+where
+    V: serde::de::Visitor<'de>
+{
+    match r {
+        Reference::Copied(s) => {
+            let string = str::from_utf8(s).map_err(|e| Error::utf8(e.valid_up_to()))?;
+            visitor.visit_str(string)
+        }
+        Reference::Borrowed(s) => {
+            let string = str::from_utf8(s).map_err(|e| Error::utf8(e.valid_up_to()))?;
+            visitor.visit_borrowed_str(string)
+        }
+    }
+}
+
+impl<'de, 'a, R> serde::Deserializer<'de> for &'a mut Deserializer<R>
+where
+    R: Reader<'de>,
+{
     type Error = super::Error;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value>
@@ -283,9 +367,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
             // map
             b'%' => self.deserialize_map(visitor),
             b'|' => self.deserialize_map(visitor),
-            _ => {
-                Err(Error::expected_value("type header"))
-            }
+            _ => Err(Error::expected_value("type header")),
         }
     }
 
@@ -297,7 +379,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
 
         match peek {
             b'#' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let val = self.reader.read_bool()?;
                 visitor.visit_bool(val)
             }
@@ -334,17 +416,17 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
 
         match peek {
             b':' => {
-                self.reader.eat_char();
-                match self.reader.peek_char()? {
+                self.reader.read_u8()?;
+                match self.reader.peek_u8()? {
                     Some(b'-') => {
-                        self.reader.eat_char();
+                        self.reader.read_u8()?;
                         let num: i64 = self.reader.read_unsigned()?;
-                        self.reader.eat_crlf()?;
+                        self.reader.read_crlf()?;
                         visitor.visit_i64(-num)
                     }
                     Some(b'0'..=b'9') => {
                         let num: i64 = self.reader.read_unsigned()?;
-                        self.reader.eat_crlf()?;
+                        self.reader.read_crlf()?;
                         visitor.visit_i64(num)
                     }
                     _ => Err(Error::expected_value("number")),
@@ -383,12 +465,12 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
 
         match peek {
             b':' => {
-                self.reader.eat_char();
-                match self.reader.peek_char()? {
+                self.reader.read_u8()?;
+                match self.reader.peek_u8()? {
                     Some(b'-') => Err(Error::unexpected_value("signed")),
                     Some(b'0'..=b'9') => {
                         let num: u64 = self.reader.read_unsigned()?;
-                        self.reader.eat_crlf()?;
+                        self.reader.read_crlf()?;
                         visitor.visit_u64(num)
                     }
                     _ => Err(Error::expected_value("number")),
@@ -413,24 +495,24 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
 
         match peek {
             b':' => {
-                self.reader.eat_char();
-                match self.reader.peek_char()? {
+                self.reader.read_u8()?;
+                match self.reader.peek_u8()? {
                     Some(b'-') => {
-                        self.reader.eat_char();
+                        self.reader.read_u8()?;
                         let num: i64 = self.reader.read_unsigned()?;
-                        self.reader.eat_crlf()?;
+                        self.reader.read_crlf()?;
                         visitor.visit_f64(-num as f64)
                     }
                     Some(b'0'..=b'9') => {
                         let num: i64 = self.reader.read_unsigned()?;
-                        self.reader.eat_crlf()?;
+                        self.reader.read_crlf()?;
                         visitor.visit_f64(num as f64)
                     }
                     _ => Err(Error::expected_value("number")),
                 }
             }
             b',' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let num = self.parse_double()?;
                 visitor.visit_f64(num)
             }
@@ -453,34 +535,29 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
 
         match peek {
             b'+' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let bytes = self.parse_simple_string()?;
-                let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
-                visitor.visit_str(string)
+                visit_ref_str(bytes, visitor)
             }
             b'-' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let bytes = self.parse_simple_string()?;
-                let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
-                visitor.visit_str(string)
+                visit_ref_str(bytes, visitor)
             }
             b'$' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let bytes = self.parse_blob_string()?;
-                let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
-                visitor.visit_str(string)
+                visit_ref_str(bytes, visitor)
             }
             b'!' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let bytes = self.parse_blob_string()?;
-                let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
-                visitor.visit_str(string)
+                visit_ref_str(bytes, visitor)
             }
             b'=' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let bytes = self.parse_blob_string()?;
-                let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
-                visitor.visit_str(string)
+                visit_ref_str(bytes, visitor)
             }
             _ => Err(Error::expected_marker("string|error")),
         }
@@ -501,29 +578,29 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
 
         match peek {
             b'+' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let bytes = self.parse_simple_string()?;
-                visitor.visit_bytes(bytes)
+                visit_ref_bytes(bytes, visitor)
             }
             b'-' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let bytes = self.parse_simple_string()?;
-                visitor.visit_bytes(bytes)
+                visit_ref_bytes(bytes, visitor)
             }
             b'$' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let bytes = self.parse_blob_string()?;
-                visitor.visit_bytes(bytes)
+                visit_ref_bytes(bytes, visitor)
             }
             b'!' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let bytes = self.parse_blob_string()?;
-                visitor.visit_bytes(bytes)
+                visit_ref_bytes(bytes, visitor)
             }
             b'=' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let bytes = self.parse_blob_string()?;
-                visitor.visit_bytes(bytes)
+                visit_ref_bytes(bytes, visitor)
             }
             _ => Err(Error::expected_marker("string|error")),
         }
@@ -545,8 +622,8 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
         match peek {
             // "_\r\n" => null
             b'_' => {
-                self.reader.eat_char();
-                self.reader.eat_crlf()?;
+                self.reader.read_u8()?;
+                self.reader.read_crlf()?;
                 visitor.visit_none()
             }
             _ => visitor.visit_some(self),
@@ -561,8 +638,8 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
 
         match peek {
             b'_' => {
-                self.reader.eat_char();
-                self.reader.eat_crlf()?;
+                self.reader.read_u8()?;
+                self.reader.read_crlf()?;
                 visitor.visit_unit()
             }
             _ => Err(Error::expected_marker("null")),
@@ -580,54 +657,50 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+        let peek = self.reader.peek_u8()?.ok_or_else(|| Error::eof())?;
 
         match name {
             crate::types::SIMPLE_ERROR_TOKEN => {
                 if peek == b'-' {
-                    self.reader.eat_char();
+                    self.reader.read_u8()?;
                     let bytes = self.parse_simple_string()?;
-                    let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
-                    visitor.visit_str(string)
+                    visit_ref_str(bytes, visitor)
                 } else {
                     Err(Error::expected_marker("simple error"))
                 }
             }
             crate::types::BLOB_ERROR_TOKEN => {
                 if peek == b'!' {
-                    self.reader.eat_char();
+                    self.reader.read_u8()?;
                     let bytes = self.parse_blob_string()?;
-                    let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
-                    visitor.visit_str(string)
+                    visit_ref_str(bytes, visitor)
                 } else {
                     Err(Error::expected_marker("blob error"))
                 }
             }
             crate::types::SIMPLE_STRING_TOKEN => {
                 if peek == b'+' {
-                    self.reader.eat_char();
+                    self.reader.read_u8()?;
                     let bytes = self.parse_simple_string()?;
-                    let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
-                    visitor.visit_str(string)
+                    visit_ref_str(bytes, visitor)
                 } else {
                     Err(Error::expected_marker("simple string"))
                 }
             }
             crate::types::BLOB_STRING_TOKEN => {
                 if peek == b'$' {
-                    self.reader.eat_char();
+                    self.reader.read_u8()?;
                     let bytes = self.parse_blob_string()?;
-                    let string = str::from_utf8(bytes).map_err(|e| Error::utf8(e.valid_up_to()))?;
-                    visitor.visit_str(string)
+                    visit_ref_str(bytes, visitor)
                 } else {
                     Err(Error::expected_marker("blob string"))
                 }
             }
             crate::types::ATTRIBUTE_SKIP_TOKEN => {
                 if peek == b'|' {
-                    self.reader.eat_char();
+                    self.reader.read_u8()?;
                     let len = self.reader.read_length()?;
-                    self.reader.eat_crlf()?;
+                    self.reader.read_crlf()?;
                     visitor.visit_map(CountMapAccess::new(self, len))
                 } else {
                     Err(Error::expected_marker("blob string"))
@@ -645,15 +718,15 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
 
         match peek {
             b'*' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let len = self.reader.read_length()?;
-                self.reader.eat_crlf()?;
+                self.reader.read_crlf()?;
                 visitor.visit_seq(CountSeqAccess::new(self, len))
             }
             b'~' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let len = self.reader.read_length()?;
-                self.reader.eat_crlf()?;
+                self.reader.read_crlf()?;
                 visitor.visit_seq(CountSeqAccess::new(self, len))
             }
             _ => Err(Error::expected_marker("array|set")),
@@ -676,7 +749,7 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_char()?.ok_or_else(|| Error::eof())?;
+        let peek = self.reader.peek_u8()?.ok_or_else(|| Error::eof())?;
 
         match name {
             crate::types::ATTRIBUTE_TOKEN => {
@@ -690,9 +763,8 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
                     Err(Error::expected_marker("attribute"))
                 }
             }
-            _ => self.deserialize_seq(visitor)
+            _ => self.deserialize_seq(visitor),
         }
-
     }
 
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value>
@@ -703,15 +775,15 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
 
         match peek {
             b'%' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let len = self.reader.read_length()?;
-                self.reader.eat_crlf()?;
+                self.reader.read_crlf()?;
                 visitor.visit_map(CountMapAccess::new(self, len))
             }
             b'|' => {
-                self.reader.eat_char();
+                self.reader.read_u8()?;
                 let len = self.reader.read_length()?;
-                self.reader.eat_crlf()?;
+                self.reader.read_crlf()?;
                 let last_skip = self.skip_attribute;
                 self.skip_attribute = true;
                 let r = visitor.visit_map(CountMapAccess::new(self, len));
@@ -760,18 +832,18 @@ impl<'de, 'a, R: Read + 'de> serde::Deserializer<'de> for &'a mut Deserializer<R
         self.deserialize_any(visitor)
     }
 }
-struct CountSeqAccess<'a, R: Read> {
+struct CountSeqAccess<'a, R> {
     de: &'a mut Deserializer<R>,
     len: usize,
 }
 
-impl<'a, R: Read> CountSeqAccess<'a, R> {
+impl<'a, R> CountSeqAccess<'a, R> {
     fn new(de: &'a mut Deserializer<R>, len: usize) -> Self {
         CountSeqAccess { de, len }
     }
 }
 
-impl<'de, 'a, R: Read + 'a + 'de> serde::de::SeqAccess<'de> for CountSeqAccess<'a, R> {
+impl<'de, 'a, R: Reader<'de> + 'a> serde::de::SeqAccess<'de> for CountSeqAccess<'a, R> {
     type Error = Error;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
@@ -789,18 +861,18 @@ impl<'de, 'a, R: Read + 'a + 'de> serde::de::SeqAccess<'de> for CountSeqAccess<'
     }
 }
 
-struct CountMapAccess<'a, R: Read> {
+struct CountMapAccess<'a, R> {
     de: &'a mut Deserializer<R>,
     len: usize,
 }
 
-impl<'a, R: Read> CountMapAccess<'a, R> {
+impl<'a, R> CountMapAccess<'a, R> {
     fn new(de: &'a mut Deserializer<R>, len: usize) -> Self {
         CountMapAccess { de, len }
     }
 }
 
-impl<'de, 'a, R: Read + 'a + 'de> serde::de::MapAccess<'de> for CountMapAccess<'a, R> {
+impl<'de, 'a, R: Reader<'de> + 'a> serde::de::MapAccess<'de> for CountMapAccess<'a, R> {
     type Error = Error;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>>
@@ -830,32 +902,35 @@ mod tests {
 
     use serde::Deserialize;
 
-    use crate::types::{owned::{BlobError, BlobString, SimpleError, SimpleString}, WithAttribute};
+    use crate::types::{
+        owned::{BlobError, BlobString, SimpleError, SimpleString},
+        WithAttribute,
+    };
 
     use super::*;
 
     #[test]
     fn test_blob_string() {
-        let mut d = Deserializer::from_reader(Cursor::new(String::from("$11\r\nhello world\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from("$11\r\nhello world\r\n")));
         let value: String = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, "hello world");
 
-        let mut d = Deserializer::from_reader(Cursor::new(String::from("$11\r\nhello world\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from("$11\r\nhello world\r\n")));
         let value: BlobString = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value.0, "hello world");
 
-        let mut d = Deserializer::from_reader(Cursor::new(String::from("+hello world\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from("+hello world\r\n")));
         let value: Result<BlobString> = Deserialize::deserialize(&mut d);
         assert!(matches!(value, Err(_)));
     }
 
     #[test]
     fn test_simple_string() {
-        let mut d = Deserializer::from_reader(Cursor::new(String::from("+hello world\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from("+hello world\r\n")));
         let value: String = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, "hello world");
 
-        let mut d = Deserializer::from_reader(Cursor::new(String::from("+hello world\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from("+hello world\r\n")));
         let value: SimpleString = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value.0, "hello world");
     }
@@ -863,62 +938,62 @@ mod tests {
     #[test]
     fn test_blob_error() {
         let mut d =
-            Deserializer::from_reader(Cursor::new(String::from("!15\r\nERR hello world\r\n")));
+            Deserializer::from_read(Cursor::new(String::from("!15\r\nERR hello world\r\n")));
         let value: BlobError = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value.0, "ERR hello world");
     }
 
     #[test]
     fn test_simple_error() {
-        let mut d = Deserializer::from_reader(Cursor::new(String::from("-ERR hello world\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from("-ERR hello world\r\n")));
         let value: SimpleError = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value.0, "ERR hello world");
     }
 
     #[test]
     fn test_bool() {
-        let mut d = Deserializer::from_reader(Cursor::new(String::from("#t\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from("#t\r\n")));
         let value: bool = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, true);
 
-        let mut d = Deserializer::from_reader(Cursor::new(String::from("#f\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from("#f\r\n")));
         let value: bool = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, false);
     }
 
     #[test]
     fn test_number() {
-        let mut d = Deserializer::from_reader(Cursor::new(String::from(":12345\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from(":12345\r\n")));
         let value: i64 = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, 12345);
 
-        let mut d = Deserializer::from_reader(Cursor::new(String::from(":-12345\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from(":-12345\r\n")));
         let value: i64 = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, -12345);
     }
 
     #[test]
     fn test_double() {
-        let mut d = Deserializer::from_reader(Cursor::new(String::from(",1.23\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from(",1.23\r\n")));
         let value: f64 = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, 1.23);
 
-        let mut d = Deserializer::from_reader(Cursor::new(String::from(",10\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from(",10\r\n")));
         let value: f64 = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, 10.0);
 
-        let mut d = Deserializer::from_reader(Cursor::new(String::from(",inf\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from(",inf\r\n")));
         let value: f64 = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, f64::INFINITY);
 
-        let mut d = Deserializer::from_reader(Cursor::new(String::from(",-inf\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from(",-inf\r\n")));
         let value: f64 = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, f64::NEG_INFINITY);
     }
 
     #[test]
     fn test_char() {
-        let mut d = Deserializer::from_reader(Cursor::new(String::from("+a\r\n")));
+        let mut d = Deserializer::from_read(Cursor::new(String::from("+a\r\n")));
         let value: char = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, 'a');
     }
@@ -926,11 +1001,11 @@ mod tests {
     #[test]
     fn test_seq() {
         let mut d =
-            Deserializer::from_reader(Cursor::new(String::from("*3\r\n:1\r\n:2\r\n:3\r\n")));
+            Deserializer::from_read(Cursor::new(String::from("*3\r\n:1\r\n:2\r\n:3\r\n")));
         let value: Vec<u64> = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, [1, 2, 3]);
 
-        let mut d = Deserializer::from_reader(Cursor::new(String::from(
+        let mut d = Deserializer::from_read(Cursor::new(String::from(
             "*2\r\n*3\r\n:1\r\n$5\r\nhello\r\n:2\r\n#f\r\n",
         )));
         let value: ((u64, String, u64), bool) = Deserialize::deserialize(&mut d).unwrap();
@@ -939,7 +1014,7 @@ mod tests {
 
     #[test]
     fn test_map() {
-        let mut d = Deserializer::from_reader(Cursor::new(String::from(
+        let mut d = Deserializer::from_read(Cursor::new(String::from(
             "%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n",
         )));
         let value: HashMap<String, usize> = Deserialize::deserialize(&mut d).unwrap();
@@ -952,7 +1027,7 @@ mod tests {
             first: usize,
             second: f64,
         }
-        let mut d = Deserializer::from_reader(Cursor::new(String::from(
+        let mut d = Deserializer::from_read(Cursor::new(String::from(
             "%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n",
         )));
         let value: CustomMap = Deserialize::deserialize(&mut d).unwrap();
@@ -978,12 +1053,12 @@ mod tests {
         //         ,0.0012<CR><LF>
         //
         let data = "|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n";
-        let mut d = Deserializer::from_reader(Cursor::new(data));
+        let mut d = Deserializer::from_read(Cursor::new(data));
         let value: (u64, u64) = Deserialize::deserialize(&mut d).unwrap();
-        assert_eq!(value, (2039123 ,9543892));
+        assert_eq!(value, (2039123, 9543892));
 
         let simple = "|1\r\n+hello\r\n+world\r\n#t\r\n";
-        let mut d = Deserializer::from_reader(Cursor::new(simple));
+        let mut d = Deserializer::from_read(Cursor::new(simple));
         let value: bool = Deserialize::deserialize(&mut d).unwrap();
         assert_eq!(value, true);
     }
@@ -1001,7 +1076,7 @@ mod tests {
         //         ,0.0012<CR><LF>
         //
         let data = "|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n";
-        let mut d = Deserializer::from_reader(Cursor::new(data));
+        let mut d = Deserializer::from_read(Cursor::new(data));
         #[derive(Deserialize)]
         struct KeyPop {
             a: f64,
@@ -1010,14 +1085,14 @@ mod tests {
         #[derive(Deserialize)]
         struct Meta {
             #[serde(rename = "key-popularity")]
-            key_popularity: KeyPop
+            key_popularity: KeyPop,
         }
         #[derive(Deserialize, PartialEq, Eq, Debug)]
         struct Pair(u64, u64);
 
         let with_attr: WithAttribute<Meta, Pair> = Deserialize::deserialize(&mut d).unwrap();
         let (attr, value) = with_attr.into_inner();
-        assert_eq!(value, Pair(2039123 ,9543892));
+        assert_eq!(value, Pair(2039123, 9543892));
         assert_eq!(attr.key_popularity.a, 0.1923);
         assert_eq!(attr.key_popularity.b, 0.0012);
     }
@@ -1032,10 +1107,10 @@ mod tests {
         //      :200\r\n
         //  :300\r\n
         let nested_attr_data = "|1\r\n+a\r\n|1\r\n+b\r\n+c\r\n:200\r\n:300\r\n";
-        let mut d = Deserializer::from_reader(Cursor::new(nested_attr_data));
+        let mut d = Deserializer::from_read(Cursor::new(nested_attr_data));
         #[derive(Deserialize)]
         struct Test {
-            a: usize
+            a: usize,
         }
         let with_attr: WithAttribute<Test, usize> = Deserialize::deserialize(&mut d).unwrap();
         let (attr, value) = with_attr.into_inner();
