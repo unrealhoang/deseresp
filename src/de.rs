@@ -8,17 +8,23 @@ use serde::Deserialize;
 
 use crate::{types::AttributeSkip, Error, Result};
 
+/// Unification of both borrowed and non-borrowed reference types.
 pub enum Reference<'b, 'c, T: ?Sized + 'static> {
     Borrowed(&'b T),
     Copied(&'c T),
 }
 
+/// Reader provides functionalities in reading RESP bytes
+/// for different readable sources.
 pub trait Reader<'de> {
+    /// Consumes the exact number of bytes from the underlying byte-array
     fn read_slice<'a>(
         &'a mut self,
         len: usize,
         consume_crlf: bool,
     ) -> Result<Reference<'de, 'a, [u8]>>;
+
+    /// Consumes the source bytes until the provided closure return true
     fn read_slice_until<'a, F>(
         &'a mut self,
         until_fn: F,
@@ -27,13 +33,18 @@ pub trait Reader<'de> {
     where
         F: Fn(u8) -> bool;
 
+    /// Peeks the current byte
     fn peek_u8(&mut self) -> Result<Option<u8>>;
+
+    /// Consumes the current byte
     fn read_u8(&mut self) -> Result<Option<u8>>;
 
+    /// Consumes a usize from this point
     fn read_length(&mut self) -> Result<usize> {
         self.read_unsigned()
     }
 
+    /// Consumes an unsigned integer from this point
     fn read_unsigned<T>(&mut self) -> Result<T>
     where
         T: CheckedMul + CheckedAdd + From<u8>,
@@ -76,6 +87,7 @@ pub trait Reader<'de> {
         }
     }
 
+    /// Consumes a double from this point
     fn read_double(&mut self) -> Result<f64> {
         let mut buf = Vec::new();
         let mut negative = false;
@@ -112,6 +124,7 @@ pub trait Reader<'de> {
         Ok(result)
     }
 
+    /// Consumes a boolean from this point
     fn read_bool(&mut self) -> Result<bool> {
         match self.peek_u8()? {
             Some(b't') => {
@@ -128,13 +141,16 @@ pub trait Reader<'de> {
         }
     }
 
+    /// Consumes a provided bytes from this point
     fn read_ident(&mut self, ident: &[u8]) -> Result<()>;
 
+    /// Consumes <cr><lf> from this point
     fn read_crlf(&mut self) -> Result<()> {
         self.read_ident(b"\r\n")
     }
 }
 
+/// Reader that wrap an underlying Read
 pub struct ReadReader<R: Read> {
     r: io::Bytes<R>,
     ch: Option<u8>,
@@ -159,7 +175,7 @@ fn read_u8<R: Read>(r: &mut io::Bytes<R>, ch: &mut Option<u8>) -> Result<Option<
         })
 }
 
-fn read_ident<R: Read>(r: &mut io::Bytes<R>, ch: &mut Option<u8>, ident: &[u8]) -> Result<()> {
+fn read_reader_ident<R: Read>(r: &mut io::Bytes<R>, ch: &mut Option<u8>, ident: &[u8]) -> Result<()> {
     for expected in ident {
         match peek_u8(r, ch)? {
             None => return Err(Error::eof()),
@@ -190,7 +206,7 @@ impl<'de, R: Read> Reader<'de> for ReadReader<R> {
         }
 
         if consume_crlf {
-            read_ident(&mut self.r, &mut self.ch, b"\r\n")?;
+            read_reader_ident(&mut self.r, &mut self.ch, b"\r\n")?;
         }
 
         Ok(Reference::Copied(&self.buf[..]))
@@ -216,7 +232,7 @@ impl<'de, R: Read> Reader<'de> for ReadReader<R> {
         }
 
         if consume_crlf {
-            read_ident(&mut self.r, &mut self.ch, b"\r\n")?;
+            read_reader_ident(&mut self.r, &mut self.ch, b"\r\n")?;
         }
 
         Ok(Reference::Copied(&self.buf[..]))
@@ -231,22 +247,32 @@ impl<'de, R: Read> Reader<'de> for ReadReader<R> {
     }
 
     fn read_ident(&mut self, ident: &[u8]) -> Result<()> {
-        read_ident(&mut self.r, &mut self.ch, ident)
+        read_reader_ident(&mut self.r, &mut self.ch, ident)
     }
 }
 
+/// Reader that wrap an underlying slice of bytes
 pub struct RefReader<'de, R: AsRef<[u8]> + ?Sized> {
     slice: &'de R,
+    src: &'de [u8],
     buf: &'de [u8],
 }
 
 impl<'de, R: AsRef<[u8]> + ?Sized> RefReader<'de, R> {
+    /// Constructs a RefReader from a slice
     pub fn from_slice(slice: &'de R) -> Self {
         let buf = slice.as_ref();
         RefReader {
             slice,
+            src: buf,
             buf
         }
+    }
+
+    /// Get number of bytes consumed from this reader
+    pub fn consumed_bytes(&self) -> usize {
+        // SAFETY: buf is advanced from src
+        unsafe { self.buf.as_ptr().offset_from(self.src.as_ptr()) as usize }
     }
 }
 
@@ -316,6 +342,7 @@ impl<'de, R: AsRef<[u8]> + ?Sized> Reader<'de> for RefReader<'de, R> {
     }
 }
 
+/// A RESP Deserializer
 pub struct Deserializer<R>
 {
     reader: R,
@@ -357,6 +384,11 @@ where
 
     pub fn get_ref(&self) -> &R {
         self.reader.slice
+    }
+
+    /// Returns number of bytes consumed from the slice
+    pub fn get_consumed_bytes(&self) -> usize {
+        self.reader.consumed_bytes()
     }
 }
 
