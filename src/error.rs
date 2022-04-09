@@ -8,7 +8,8 @@ pub enum Error {
     UnexpectedValue(&'static str),
     UTF8(usize),
     Parse,
-    Custom(String)
+    NaN,
+    Custom(String),
 }
 
 impl Error {
@@ -43,6 +44,10 @@ impl Error {
 
     pub fn parse() -> Self {
         Error::Parse
+    }
+
+    pub fn nan() -> Self {
+        Error::NaN
     }
 }
 
