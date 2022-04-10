@@ -1,7 +1,15 @@
 [package]
 name = "deseresp"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
+description = """
+deseresp is an implementation of serializer and
+deserializer for Redis's RESP3
+format using serde framework.
+"""
+license = "MIT OR Apache-2.0"
+documentation = "https://docs.rs/deseresp"
+repository = "https://github.com/unrealhoang/deseresp"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

@@ -13,14 +13,14 @@ use crate::{
     Error,
 };
 
+/// A RESP Serializer
 pub struct Serializer<W> {
     writer: W,
 }
 
-impl<W: Write> Serializer<W> {
-    pub fn from_writer(w: W) -> Self {
-        Serializer { writer: w }
-    }
+/// Creates a [`Serializer`] from an underlying [`Write`]
+pub fn from_write<W: Write>(w: W) -> Serializer<W> {
+    Serializer { writer: w }
 }
 
 impl serde::ser::Error for Error {
@@ -405,12 +405,12 @@ impl<'a, W: Write> serde::Serializer for RespSpecificSerializer<'a, W> {
 
 impl<W: Write> Serializer<W> {
     fn write_i64(&mut self, v: i64) -> Result<(), Error> {
-        write!(self.writer, ":{}\r\n", v).map_err(|e| Error::io(e))?;
+        write!(self.writer, ":{}\r\n", v).map_err(Error::io)?;
 
         Ok(())
     }
     fn write_u64(&mut self, v: u64) -> Result<(), Error> {
-        write!(self.writer, ":{}\r\n", v).map_err(|e| Error::io(e))?;
+        write!(self.writer, ":{}\r\n", v).map_err(Error::io)?;
 
         Ok(())
     }
@@ -421,79 +421,79 @@ impl<W: Write> Serializer<W> {
 
         if v.is_infinite() {
             if v.is_sign_positive() {
-                write!(self.writer, ",inf\r\n").map_err(|e| Error::io(e))?;
+                write!(self.writer, ",inf\r\n").map_err(Error::io)?;
             } else {
-                write!(self.writer, ",-inf\r\n").map_err(|e| Error::io(e))?;
+                write!(self.writer, ",-inf\r\n").map_err(Error::io)?;
             }
 
             return Ok(());
         }
 
-        write!(self.writer, ",{:.}\r\n", v).map_err(|e| Error::io(e))?;
+        write!(self.writer, ",{:.}\r\n", v).map_err(Error::io)?;
 
         Ok(())
     }
     fn write_bool(&mut self, v: bool) -> Result<(), Error> {
         if v {
-            write!(self.writer, "#t\r\n").map_err(|e| Error::io(e))?;
+            write!(self.writer, "#t\r\n").map_err(Error::io)?;
         } else {
-            write!(self.writer, "#f\r\n").map_err(|e| Error::io(e))?;
+            write!(self.writer, "#f\r\n").map_err(Error::io)?;
         }
 
         Ok(())
     }
     fn write_simple_string_char(&mut self, c: char) -> Result<(), Error> {
-        write!(self.writer, "+{}\r\n", c).map_err(|e| Error::io(e))?;
+        write!(self.writer, "+{}\r\n", c).map_err(Error::io)?;
 
         Ok(())
     }
     fn write_simple_string(&mut self, s: &str) -> Result<(), Error> {
-        write!(self.writer, "+{}\r\n", s).map_err(|e| Error::io(e))?;
+        write!(self.writer, "+{}\r\n", s).map_err(Error::io)?;
 
         Ok(())
     }
     fn write_blob_string(&mut self, s: &str) -> Result<(), Error> {
-        write!(self.writer, "${}\r\n{}\r\n", s.len(), s).map_err(|e| Error::io(e))?;
+        write!(self.writer, "${}\r\n{}\r\n", s.len(), s).map_err(Error::io)?;
 
         Ok(())
     }
     fn write_simple_error(&mut self, s: &str) -> Result<(), Error> {
-        write!(self.writer, "-{}\r\n", s).map_err(|e| Error::io(e))?;
+        write!(self.writer, "-{}\r\n", s).map_err(Error::io)?;
 
         Ok(())
     }
     fn write_blob_error(&mut self, s: &str) -> Result<(), Error> {
-        write!(self.writer, "!{}\r\n{}\r\n", s.len(), s).map_err(|e| Error::io(e))?;
+        write!(self.writer, "!{}\r\n{}\r\n", s.len(), s).map_err(Error::io)?;
 
         Ok(())
     }
     fn write_null(&mut self) -> Result<(), Error> {
-        write!(self.writer, "_\r\n").map_err(|e| Error::io(e))?;
+        write!(self.writer, "_\r\n").map_err(Error::io)?;
 
         Ok(())
     }
     fn write_array_len_marker(&mut self, len: usize) -> Result<(), Error> {
-        write!(self.writer, "*{}\r\n", len).map_err(|e| Error::io(e))?;
+        write!(self.writer, "*{}\r\n", len).map_err(Error::io)?;
 
         Ok(())
     }
     fn write_array_nolen_marker(&mut self) -> Result<(), Error> {
-        write!(self.writer, "*?\r\n").map_err(|e| Error::io(e))?;
+        write!(self.writer, "*?\r\n").map_err(Error::io)?;
 
         Ok(())
     }
     fn write_map_len_marker(&mut self, len: usize) -> Result<(), Error> {
-        write!(self.writer, "%{}\r\n", len).map_err(|e| Error::io(e))?;
+        write!(self.writer, "%{}\r\n", len).map_err(Error::io)?;
 
         Ok(())
     }
     fn write_map_nolen_marker(&mut self) -> Result<(), Error> {
-        write!(self.writer, "%?\r\n").map_err(|e| Error::io(e))?;
+        write!(self.writer, "%?\r\n").map_err(Error::io)?;
 
         Ok(())
     }
     fn write_end(&mut self) -> Result<(), Error> {
-        write!(self.writer, ".\r\n").map_err(|e| Error::io(e))?;
+        write!(self.writer, ".\r\n").map_err(Error::io)?;
 
         Ok(())
     }
@@ -722,7 +722,7 @@ mod tests {
     {
         let mut buf = Vec::new();
         {
-            let serializer = Serializer::from_writer(&mut buf);
+            let serializer = from_write(&mut buf);
             serialize_fn(serializer);
         }
         test_fn(&buf[..]);

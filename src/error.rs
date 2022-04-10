@@ -1,14 +1,24 @@
+/// Serialize or Deserialize error
 #[derive(Debug)]
 pub enum Error {
-    InvalidBytes,
+    /// Error coming from underlying io
     IO(std::io::Error),
+    /// Unexpected EOF encountered
     EOF,
+    /// Expected a marker of one type but received something else
     ExpectedMarker(&'static str),
+    /// Expected a value of one type but received something else
     ExpectedValue(&'static str),
+    /// Received an unexpected value
     UnexpectedValue(&'static str),
+    /// Failed to convert the underlying bytes to utf8, value return the offset right before the
+    /// invalid utf8
     UTF8(usize),
+    /// Failed to parse a float value
     Parse,
+    /// Received a NaN
     NaN,
+    /// Custom error from serialize/deserialize
     Custom(String),
 }
 
@@ -68,4 +78,5 @@ impl serde::de::Error for Error {
     }
 }
 
+/// Result from serialize/deserialize
 pub type Result<T> = std::result::Result<T, Error>;

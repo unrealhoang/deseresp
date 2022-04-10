@@ -3,8 +3,9 @@ mod error;
 mod ser;
 pub mod types;
 
-pub use de::Deserializer;
+pub use de::{from_read, from_slice, Deserializer};
 pub use error::{Error, Result};
+pub use ser::{from_write, Serializer};
 
 #[cfg(test)]
 mod tests {

@@ -49,7 +49,7 @@ pub trait Reader<'de> {
     where
         T: CheckedMul + CheckedAdd + From<u8>,
     {
-        let peek = self.peek_u8()?.ok_or_else(|| Error::eof())?;
+        let peek = self.peek_u8()?.ok_or_else(Error::eof)?;
         match peek {
             b'0' => {
                 self.read_u8()?;
@@ -66,10 +66,8 @@ pub trait Reader<'de> {
                         Some(c @ b'0'..=b'9') => {
                             let digit = T::from(c - b'0');
                             let ten = T::from(10);
-                            if let Some(r) = num
-                                .checked_mul(&ten)
-                                .map(|n| n.checked_add(&digit))
-                                .flatten()
+                            if let Some(r) =
+                                num.checked_mul(&ten).and_then(|n| n.checked_add(&digit))
                             {
                                 num = r;
                             } else {
@@ -165,7 +163,7 @@ fn peek_u8<R: Read>(r: &mut io::Bytes<R>, ch: &mut Option<u8>) -> Result<Option<
 }
 
 fn read_u8<R: Read>(r: &mut io::Bytes<R>, ch: &mut Option<u8>) -> Result<Option<u8>> {
-    r.next().transpose().map_err(|e| Error::io(e)).map(|next| {
+    r.next().transpose().map_err(Error::io).map(|next| {
         *ch = next;
         next
     })
@@ -199,7 +197,7 @@ impl<'de, R: Read> Reader<'de> for ReadReader<R> {
     ) -> Result<Reference<'de, 'a, [u8]>> {
         self.buf.clear();
         for _count in 0..len {
-            let ch = peek_u8(&mut self.r, &mut self.ch)?.ok_or_else(|| Error::eof())?;
+            let ch = peek_u8(&mut self.r, &mut self.ch)?.ok_or_else(Error::eof)?;
             self.buf.push(ch);
             read_u8(&mut self.r, &mut self.ch)?;
         }
@@ -221,7 +219,7 @@ impl<'de, R: Read> Reader<'de> for ReadReader<R> {
     {
         self.buf.clear();
         loop {
-            let ch = peek_u8(&mut self.r, &mut self.ch)?.ok_or_else(|| Error::eof())?;
+            let ch = peek_u8(&mut self.r, &mut self.ch)?.ok_or_else(Error::eof)?;
             if until_fn(ch) {
                 break;
             }
@@ -314,7 +312,7 @@ impl<'de, R: AsRef<[u8]> + ?Sized> Reader<'de> for RefReader<'de, R> {
             .buf
             .iter()
             .position(|ch| until_fn(*ch))
-            .ok_or_else(|| Error::eof())?;
+            .ok_or_else(Error::eof)?;
 
         let (a, b) = self.buf.split_at(len);
         self.buf = b;
@@ -363,12 +361,22 @@ where
     }
 }
 
-impl<R: Read> Deserializer<ReadReader<R>> {
-    pub fn from_read(r: R) -> Self {
-        Deserializer {
-            reader: ReadReader::from_read(r),
-            skip_attribute: true,
-        }
+/// Create a new [`Deserializer`] from an underlying Read
+pub fn from_read<R: Read>(r: R) -> Deserializer<ReadReader<R>> {
+    Deserializer {
+        reader: ReadReader::from_read(r),
+        skip_attribute: true,
+    }
+}
+
+/// Creates a new [`Deserializer`] from a slice of bytes
+pub fn from_slice<R>(slice: &R) -> Deserializer<RefReader<'_, R>>
+where
+    R: AsRef<[u8]> + ?Sized,
+{
+    Deserializer {
+        reader: RefReader::from_slice(slice),
+        skip_attribute: true,
     }
 }
 
@@ -376,13 +384,7 @@ impl<'de, R> Deserializer<RefReader<'de, R>>
 where
     R: AsRef<[u8]> + ?Sized,
 {
-    pub fn from_slice(slice: &'de R) -> Self {
-        Deserializer {
-            reader: RefReader::from_slice(slice),
-            skip_attribute: true,
-        }
-    }
-
+    /// Returns the underlying slice
     pub fn get_ref(&self) -> &R {
         self.reader.slice
     }
@@ -425,11 +427,11 @@ impl<'de, R: Reader<'de>> Deserializer<R> {
     }
 
     fn peek_skip_attribute(&mut self) -> Result<u8> {
-        let peek = self.reader.peek_u8()?.ok_or_else(|| Error::eof())?;
+        let peek = self.reader.peek_u8()?.ok_or_else(Error::eof)?;
 
         if peek == b'|' && self.skip_attribute {
             self.skip_attribute()?;
-            return self.reader.peek_u8()?.ok_or_else(|| Error::eof());
+            return self.reader.peek_u8()?.ok_or_else(Error::eof);
         }
 
         Ok(peek)
@@ -513,7 +515,7 @@ where
                 let val = self.reader.read_bool()?;
                 visitor.visit_bool(val)
             }
-            _ => Err(Error::expected_marker(&"bool")),
+            _ => Err(Error::expected_marker("bool")),
         }
     }
 
@@ -787,7 +789,7 @@ where
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_u8()?.ok_or_else(|| Error::eof())?;
+        let peek = self.reader.peek_u8()?.ok_or_else(Error::eof)?;
 
         match name {
             crate::types::SIMPLE_ERROR_TOKEN => {
@@ -879,7 +881,7 @@ where
     where
         V: serde::de::Visitor<'de>,
     {
-        let peek = self.reader.peek_u8()?.ok_or_else(|| Error::eof())?;
+        let peek = self.reader.peek_u8()?.ok_or_else(Error::eof)?;
 
         match name {
             crate::types::ATTRIBUTE_TOKEN => {
@@ -981,7 +983,7 @@ impl<'de, 'a, R: Reader<'de> + 'a> serde::de::SeqAccess<'de> for CountSeqAccess<
         T: serde::de::DeserializeSeed<'de>,
     {
         if self.len > 0 {
-            let result = seed.deserialize(&mut *self.de).map(|r| Some(r));
+            let result = seed.deserialize(&mut *self.de).map(Some);
             self.len -= 1;
 
             result
@@ -1010,7 +1012,7 @@ impl<'de, 'a, R: Reader<'de> + 'a> serde::de::MapAccess<'de> for CountMapAccess<
         K: serde::de::DeserializeSeed<'de>,
     {
         if self.len > 0 {
-            let key = seed.deserialize(&mut *self.de).map(|r| Some(r));
+            let key = seed.deserialize(&mut *self.de).map(Some);
             self.len -= 1;
             key
         } else {
@@ -1027,6 +1029,7 @@ impl<'de, 'a, R: Reader<'de> + 'a> serde::de::MapAccess<'de> for CountMapAccess<
 }
 
 #[cfg(test)]
+#[allow(clippy::bool_assert_comparison)]
 mod tests {
     use std::{collections::HashMap, io::Cursor};
 
@@ -1043,11 +1046,11 @@ mod tests {
         T: Deserialize<'de>,
         F: Fn(T),
     {
-        let mut read_d = Deserializer::from_read(Cursor::new(Vec::from(input)));
+        let mut read_d = from_read(Cursor::new(Vec::from(input)));
         let value: T = Deserialize::deserialize(&mut read_d).unwrap();
         test_fn(value);
 
-        let mut slice_d = Deserializer::from_slice(input);
+        let mut slice_d = from_slice(input);
         let value: T = Deserialize::deserialize(&mut slice_d).unwrap();
         test_fn(value);
     }
@@ -1057,11 +1060,11 @@ mod tests {
         T: Deserialize<'de>,
         F: Fn(Result<T>),
     {
-        let mut read_d = Deserializer::from_read(Cursor::new(Vec::from(input)));
+        let mut read_d = from_read(Cursor::new(Vec::from(input)));
         let value: Result<T> = Deserialize::deserialize(&mut read_d);
         test_fn(value);
 
-        let mut slice_d = Deserializer::from_slice(input);
+        let mut slice_d = from_slice(input);
         let value: Result<T> = Deserialize::deserialize(&mut slice_d);
         test_fn(value);
     }

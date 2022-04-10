@@ -1,9 +1,12 @@
-pub const SIMPLE_ERROR_TOKEN: &str = "$SimpleError";
-pub const BLOB_ERROR_TOKEN: &str = "$BulkError";
-pub const SIMPLE_STRING_TOKEN: &str = "$SimpleString";
-pub const BLOB_STRING_TOKEN: &str = "$BulkString";
-pub const ATTRIBUTE_SKIP_TOKEN: &str = "$AttributeSkip";
-pub const ATTRIBUTE_TOKEN: &str = "$WithAttribute";
+//! Contains specific RESP types implemented with custom Serialize/Deserialize
+//! to tell [`Serializer`](crate::Serializer)/[`Deserializer`](crate::Deserializer)
+//! to se/der correctly.
+pub(crate) const SIMPLE_ERROR_TOKEN: &str = "$SimpleError";
+pub(crate) const BLOB_ERROR_TOKEN: &str = "$BulkError";
+pub(crate) const SIMPLE_STRING_TOKEN: &str = "$SimpleString";
+pub(crate) const BLOB_STRING_TOKEN: &str = "$BulkString";
+pub(crate) const ATTRIBUTE_SKIP_TOKEN: &str = "$AttributeSkip";
+pub(crate) const ATTRIBUTE_TOKEN: &str = "$WithAttribute";
 
 use std::marker::PhantomData;
 
@@ -12,13 +15,22 @@ use serde::{
     Deserialize,
 };
 pub mod owned {
+    //! Contain owned types (String, Vec)
     use serde::{de::Visitor, Serialize};
 
     use super::*;
 
+    /// Expects a SimpleError from deserializer,
+    /// Serialize as a RESP SimpleError
     pub struct SimpleError(pub String);
+    /// Expects a BlobError from deserializer,
+    /// Serialize as a RESP BlobError
     pub struct BlobError(pub String);
+    /// Expects a SimpleString from deserializer,
+    /// Serialize as a RESP SimpleString
     pub struct SimpleString(pub String);
+    /// Expects a BlobString from deserializer,
+    /// Serialize as a RESP BlobString
     pub struct BlobString(pub String);
 
     macro_rules! impl_deserialize {
@@ -82,7 +94,11 @@ macro_rules! empty_visit {
     };
 }
 
-pub struct AttributeSkip;
+/// Custom struct to expect an attribute from [`crate::Deserializer`]
+/// and ignore its value
+pub(crate) struct AttributeSkip;
+/// Custom struct to expect a value from [`crate::Deserializer`],
+/// and ignore its value
 pub struct AnySkip;
 struct AnySkipVisitor;
 impl<'de> Visitor<'de> for AnySkipVisitor {
@@ -180,6 +196,7 @@ impl<'de> Deserialize<'de> for AnySkip {
     }
 }
 
+/// Embed a RESP value V with an attribute A
 pub struct WithAttribute<A, V> {
     attr: A,
     value: V,
@@ -187,14 +204,22 @@ pub struct WithAttribute<A, V> {
 struct WithAttributeVisitor<A, V>(PhantomData<(A, V)>);
 
 impl<A, V> WithAttribute<A, V> {
+    /// Attach an attribute to a value
+    pub fn new(attr: A, value: V) -> Self {
+        WithAttribute { attr, value }
+    }
+
+    /// Unwrap underlying attribute and value
     pub fn into_inner(self) -> (A, V) {
         (self.attr, self.value)
     }
 
+    /// Unwrap underlying attribute, drops the value
     pub fn into_attribute(self) -> A {
         self.attr
     }
 
+    /// Unwrap underlying value, drop the attribute
     pub fn into_value(self) -> V {
         self.value
     }
