@@ -165,17 +165,17 @@ fn peek_u8<R: Read>(r: &mut io::Bytes<R>, ch: &mut Option<u8>) -> Result<Option<
 }
 
 fn read_u8<R: Read>(r: &mut io::Bytes<R>, ch: &mut Option<u8>) -> Result<Option<u8>> {
-    r
-        .next()
-        .transpose()
-        .map_err(|e| Error::io(e))
-        .map(|next| {
-            *ch = next;
-            next
-        })
+    r.next().transpose().map_err(|e| Error::io(e)).map(|next| {
+        *ch = next;
+        next
+    })
 }
 
-fn read_reader_ident<R: Read>(r: &mut io::Bytes<R>, ch: &mut Option<u8>, ident: &[u8]) -> Result<()> {
+fn read_reader_ident<R: Read>(
+    r: &mut io::Bytes<R>,
+    ch: &mut Option<u8>,
+    ident: &[u8],
+) -> Result<()> {
     for expected in ident {
         match peek_u8(r, ch)? {
             None => return Err(Error::eof()),
@@ -199,8 +199,7 @@ impl<'de, R: Read> Reader<'de> for ReadReader<R> {
     ) -> Result<Reference<'de, 'a, [u8]>> {
         self.buf.clear();
         for _count in 0..len {
-            let ch = peek_u8(&mut self.r, &mut self.ch)?
-                .ok_or_else(|| Error::eof())?;
+            let ch = peek_u8(&mut self.r, &mut self.ch)?.ok_or_else(|| Error::eof())?;
             self.buf.push(ch);
             read_u8(&mut self.r, &mut self.ch)?;
         }
@@ -218,14 +217,13 @@ impl<'de, R: Read> Reader<'de> for ReadReader<R> {
         consume_crlf: bool,
     ) -> Result<Reference<'de, 'a, [u8]>>
     where
-        F: Fn(u8) -> bool
+        F: Fn(u8) -> bool,
     {
         self.buf.clear();
         loop {
-            let ch = peek_u8(&mut self.r, &mut self.ch)?
-                .ok_or_else(|| Error::eof())?;
+            let ch = peek_u8(&mut self.r, &mut self.ch)?.ok_or_else(|| Error::eof())?;
             if until_fn(ch) {
-                break
+                break;
             }
             self.buf.push(ch);
             read_u8(&mut self.r, &mut self.ch)?;
@@ -265,7 +263,7 @@ impl<'de, R: AsRef<[u8]> + ?Sized> RefReader<'de, R> {
         RefReader {
             slice,
             src: buf,
-            buf
+            buf,
         }
     }
 
@@ -310,8 +308,12 @@ impl<'de, R: AsRef<[u8]> + ?Sized> Reader<'de> for RefReader<'de, R> {
         consume_crlf: bool,
     ) -> Result<Reference<'de, 'a, [u8]>>
     where
-        F: Fn(u8) -> bool {
-        let len = self.buf.iter().position(|ch| until_fn(*ch))
+        F: Fn(u8) -> bool,
+    {
+        let len = self
+            .buf
+            .iter()
+            .position(|ch| until_fn(*ch))
             .ok_or_else(|| Error::eof())?;
 
         let (a, b) = self.buf.split_at(len);
@@ -343,8 +345,7 @@ impl<'de, R: AsRef<[u8]> + ?Sized> Reader<'de> for RefReader<'de, R> {
 }
 
 /// A RESP Deserializer
-pub struct Deserializer<R>
-{
+pub struct Deserializer<R> {
     reader: R,
     skip_attribute: bool,
 }
@@ -397,14 +398,14 @@ impl<'de, R: Reader<'de>> Deserializer<R> {
         let len = self.reader.read_length()?;
         self.reader.read_crlf()?;
 
-        let slice = self.reader
-            .read_slice(len, true)?;
+        let slice = self.reader.read_slice(len, true)?;
 
         Ok(slice)
     }
 
     fn parse_simple_string<'a>(&'a mut self) -> Result<Reference<'de, 'a, [u8]>> {
-        let slice = self.reader
+        let slice = self
+            .reader
             .read_slice_until(|ch| ch == b'\r' || ch == b'\n', true)?;
 
         Ok(slice)
@@ -437,7 +438,7 @@ impl<'de, R: Reader<'de>> Deserializer<R> {
 
 fn visit_ref_bytes<'de, 'a, V>(r: Reference<'de, 'a, [u8]>, visitor: V) -> Result<V::Value>
 where
-    V: serde::de::Visitor<'de>
+    V: serde::de::Visitor<'de>,
 {
     match r {
         Reference::Copied(s) => visitor.visit_bytes(s),
@@ -447,7 +448,7 @@ where
 
 fn visit_ref_str<'de, 'a, V>(r: Reference<'de, 'a, [u8]>, visitor: V) -> Result<V::Value>
 where
-    V: serde::de::Visitor<'de>
+    V: serde::de::Visitor<'de>,
 {
     match r {
         Reference::Copied(s) => {
@@ -1031,17 +1032,16 @@ mod tests {
 
     use serde::Deserialize;
 
+    use super::*;
     use crate::types::{
         owned::{BlobError, BlobString, SimpleError, SimpleString},
         WithAttribute,
     };
 
-    use super::*;
-
     fn test_deserialize<'de, T, F>(input: &'de [u8], test_fn: F)
     where
         T: Deserialize<'de>,
-        F: Fn(T)
+        F: Fn(T),
     {
         let mut read_d = Deserializer::from_read(Cursor::new(Vec::from(input)));
         let value: T = Deserialize::deserialize(&mut read_d).unwrap();
@@ -1055,7 +1055,7 @@ mod tests {
     fn test_deserialize_result<'de, T, F>(input: &'de [u8], test_fn: F)
     where
         T: Deserialize<'de>,
-        F: Fn(Result<T>)
+        F: Fn(Result<T>),
     {
         let mut read_d = Deserializer::from_read(Cursor::new(Vec::from(input)));
         let value: Result<T> = Deserialize::deserialize(&mut read_d);
@@ -1160,33 +1160,42 @@ mod tests {
             assert_eq!(value, [1, 2, 3]);
         });
 
-        test_deserialize(b"*2\r\n*3\r\n:1\r\n$5\r\nhello\r\n:2\r\n#f\r\n", |value: ((u64, String, u64), bool)| {
-            assert_eq!(value, ((1, String::from("hello"), 2), false));
-        });
+        test_deserialize(
+            b"*2\r\n*3\r\n:1\r\n$5\r\nhello\r\n:2\r\n#f\r\n",
+            |value: ((u64, String, u64), bool)| {
+                assert_eq!(value, ((1, String::from("hello"), 2), false));
+            },
+        );
     }
 
     #[test]
     fn test_map() {
-        test_deserialize(b"%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n", |value: HashMap<String, usize>| {
-            let kv = value.into_iter().collect::<Vec<_>>();
-            assert!(kv.contains(&("first".to_string(), 1)));
-            assert!(kv.contains(&("second".to_string(), 2)));
-        });
+        test_deserialize(
+            b"%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n",
+            |value: HashMap<String, usize>| {
+                let kv = value.into_iter().collect::<Vec<_>>();
+                assert!(kv.contains(&("first".to_string(), 1)));
+                assert!(kv.contains(&("second".to_string(), 2)));
+            },
+        );
 
         #[derive(PartialEq, Deserialize, Debug)]
         struct CustomMap {
             first: usize,
             second: f64,
         }
-        test_deserialize(b"%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n", |value: CustomMap| {
-            assert_eq!(
-                value,
-                CustomMap {
-                    first: 1,
-                    second: 2.0
-                }
-            );
-        });
+        test_deserialize(
+            b"%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n",
+            |value: CustomMap| {
+                assert_eq!(
+                    value,
+                    CustomMap {
+                        first: 1,
+                        second: 2.0
+                    }
+                );
+            },
+        );
     }
 
     #[test]
@@ -1255,10 +1264,13 @@ mod tests {
         struct Test {
             a: usize,
         }
-        test_deserialize(b"|1\r\n+a\r\n|1\r\n+b\r\n+c\r\n:200\r\n:300\r\n", |with_attr: WithAttribute<Test, usize>| {
-            let (attr, value) = with_attr.into_inner();
-            assert_eq!(attr.a, 200);
-            assert_eq!(value, 300);
-        });
+        test_deserialize(
+            b"|1\r\n+a\r\n|1\r\n+b\r\n+c\r\n:200\r\n:300\r\n",
+            |with_attr: WithAttribute<Test, usize>| {
+                let (attr, value) = with_attr.into_inner();
+                assert_eq!(attr.a, 200);
+                assert_eq!(value, 300);
+            },
+        );
     }
 }

@@ -7,9 +7,12 @@ pub const ATTRIBUTE_TOKEN: &str = "$WithAttribute";
 
 use std::marker::PhantomData;
 
-use serde::{Deserialize, de::{Visitor, DeserializeOwned, self}};
+use serde::{
+    de::{self, DeserializeOwned, Visitor},
+    Deserialize,
+};
 pub mod owned {
-    use serde::de::Visitor;
+    use serde::{de::Visitor, Serialize};
 
     use super::*;
 
@@ -50,6 +53,22 @@ pub mod owned {
     impl_deserialize!(SimpleString: SIMPLE_STRING_TOKEN => SimpleStringVisitor);
     impl_deserialize!(BlobString: BLOB_STRING_TOKEN => BlobStringVisitor);
 
+    macro_rules! impl_serialize {
+        ($type_name:ident: $token:ident) => {
+            impl Serialize for $type_name {
+                fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                where
+                    S: serde::Serializer,
+                {
+                    serializer.serialize_newtype_struct($token, &self.0)
+                }
+            }
+        };
+    }
+    impl_serialize!(SimpleError: SIMPLE_ERROR_TOKEN);
+    impl_serialize!(BlobError: BLOB_ERROR_TOKEN);
+    impl_serialize!(SimpleString: SIMPLE_STRING_TOKEN);
+    impl_serialize!(BlobString: BLOB_STRING_TOKEN);
 }
 
 macro_rules! empty_visit {
@@ -60,7 +79,7 @@ macro_rules! empty_visit {
         {
             Ok(())
         }
-    }
+    };
 }
 
 pub struct AttributeSkip;
@@ -163,7 +182,7 @@ impl<'de> Deserialize<'de> for AnySkip {
 
 pub struct WithAttribute<A, V> {
     attr: A,
-    value: V
+    value: V,
 }
 struct WithAttributeVisitor<A, V>(PhantomData<(A, V)>);
 
@@ -192,9 +211,11 @@ where
     where
         S: serde::de::SeqAccess<'de>,
     {
-        let attr = seq.next_element::<A>()?
+        let attr = seq
+            .next_element::<A>()?
             .ok_or_else(|| de::Error::invalid_length(0, &"2 expected"))?;
-        let value = seq.next_element::<V>()?
+        let value = seq
+            .next_element::<V>()?
             .ok_or_else(|| de::Error::invalid_length(1, &"2 expected"))?;
 
         Ok(WithAttribute::<A, V> { attr, value })
@@ -212,8 +233,12 @@ where
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>
+        D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_tuple_struct(ATTRIBUTE_TOKEN, 2, WithAttributeVisitor::<A, V>(PhantomData))
+        deserializer.deserialize_tuple_struct(
+            ATTRIBUTE_TOKEN,
+            2,
+            WithAttributeVisitor::<A, V>(PhantomData),
+        )
     }
 }

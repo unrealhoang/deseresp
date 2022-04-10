@@ -57,13 +57,12 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-}
+impl std::error::Error for Error {}
 
 impl serde::de::Error for Error {
     fn custom<T>(msg: T) -> Self
     where
-        T: std::fmt::Display
+        T: std::fmt::Display,
     {
         Error::Custom(msg.to_string())
     }
