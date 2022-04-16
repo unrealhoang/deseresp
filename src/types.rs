@@ -12,7 +12,7 @@ use std::marker::PhantomData;
 
 use serde::{
     de::{self, DeserializeOwned, Visitor},
-    Deserialize,
+    Deserialize, Serialize,
 };
 pub mod owned {
     //! Contain owned types (String, Vec)
@@ -265,5 +265,30 @@ where
             2,
             WithAttributeVisitor::<A, V>(PhantomData),
         )
+    }
+}
+
+/// OK Response from a command, equivalent to SimpleString("OK")
+pub struct OkResponse;
+
+impl<'de> Deserialize<'de> for OkResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s: owned::SimpleString = Deserialize::deserialize(deserializer)?;
+        if s.0.eq_ignore_ascii_case("ok") {
+            return Err(de::Error::custom("exect +OK"));
+        }
+        Ok(OkResponse)
+    }
+}
+
+impl Serialize for OkResponse {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_newtype_struct(SIMPLE_STRING_TOKEN, "OK")
     }
 }
