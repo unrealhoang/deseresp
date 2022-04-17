@@ -63,7 +63,17 @@ impl Error {
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TODO")
+        match self {
+            Error::IO(e) => write!(f, "IO Error:\n{}", e),
+            Error::EOF => write!(f, "Reach unexpected EOF"),
+            Error::ExpectedMarker(m) => write!(f, "expected marker {}, received other", m),
+            Error::ExpectedValue(v) => write!(f, "expected value {}, received other", v),
+            Error::UnexpectedValue(v) => write!(f, "received unexpected value {}", v),
+            Error::UTF8(_) => write!(f, "failed to parse input as utf8"),
+            Error::Parse => write!(f, "failed to parse number or overflow"),
+            Error::NaN => write!(f, "NaN received"),
+            Error::Custom(c) => write!(f, "Custom error:\n{}", c),
+        }
     }
 }
 
