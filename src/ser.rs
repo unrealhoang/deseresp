@@ -712,21 +712,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::types::owned::{BlobError, BlobString, SimpleError, SimpleString};
-
-    #[track_caller]
-    fn test_serialize<F, T>(serialize_fn: F, test_fn: T)
-    where
-        F: Fn(Serializer<&mut Vec<u8>>),
-        T: Fn(&[u8]),
-    {
-        let mut buf = Vec::new();
-        {
-            let serializer = from_write(&mut buf);
-            serialize_fn(serializer);
-        }
-        test_fn(&buf[..]);
-    }
+    use crate::{
+        test_utils::test_serialize,
+        types::owned::{BlobError, BlobString, SimpleError, SimpleString},
+    };
 
     #[test]
     fn test_serialize_bool() {

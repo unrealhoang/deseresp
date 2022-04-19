@@ -1036,24 +1036,13 @@ mod tests {
     use serde::Deserialize;
 
     use super::*;
-    use crate::types::{
-        owned::{BlobError, BlobString, SimpleError, SimpleString},
-        WithAttribute,
+    use crate::{
+        test_utils::test_deserialize,
+        types::{
+            owned::{BlobError, BlobString, SimpleError, SimpleString},
+            WithAttribute,
+        },
     };
-
-    fn test_deserialize<'de, T, F>(input: &'de [u8], test_fn: F)
-    where
-        T: Deserialize<'de>,
-        F: Fn(T),
-    {
-        let mut read_d = from_read(Cursor::new(Vec::from(input)));
-        let value: T = Deserialize::deserialize(&mut read_d).unwrap();
-        test_fn(value);
-
-        let mut slice_d = from_slice(input);
-        let value: T = Deserialize::deserialize(&mut slice_d).unwrap();
-        test_fn(value);
-    }
 
     fn test_deserialize_result<'de, T, F>(input: &'de [u8], test_fn: F)
     where

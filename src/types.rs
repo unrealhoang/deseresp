@@ -33,6 +33,25 @@ pub mod owned {
     /// Serialize as a RESP BlobString
     pub struct BlobString(pub String);
 
+    macro_rules! impl_initializers {
+        ($type_name:ident) => {
+            impl From<String> for $type_name {
+                fn from(s: String) -> Self {
+                    $type_name(s)
+                }
+            }
+            impl From<&str> for $type_name {
+                fn from(s: &str) -> Self {
+                    $type_name(s.to_owned())
+                }
+            }
+        };
+    }
+    impl_initializers!(SimpleError);
+    impl_initializers!(BlobError);
+    impl_initializers!(SimpleString);
+    impl_initializers!(BlobString);
+
     macro_rules! impl_deserialize {
         ($type_name:ident: $token:ident => $visitor_name:ident) => {
             struct $visitor_name;
@@ -81,6 +100,103 @@ pub mod owned {
     impl_serialize!(BlobError: BLOB_ERROR_TOKEN);
     impl_serialize!(SimpleString: SIMPLE_STRING_TOKEN);
     impl_serialize!(BlobString: BLOB_STRING_TOKEN);
+}
+
+pub mod borrowed {
+    //! Contain borrowed types (&str, &[])
+    use std::borrow::Cow;
+
+    use serde::{de::Visitor, Serialize};
+
+    use super::*;
+
+    /// Expects a SimpleError from deserializer,
+    /// Serialize as a RESP SimpleError
+    pub struct SimpleError<'a>(pub Cow<'a, str>);
+    /// Expects a BlobError from deserializer,
+    /// Serialize as a RESP BlobError
+    pub struct BlobError<'a>(pub Cow<'a, str>);
+    /// Expects a SimpleString from deserializer,
+    /// Serialize as a RESP SimpleString
+    pub struct SimpleString<'a>(pub Cow<'a, str>);
+    /// Expects a BlobString from deserializer,
+    /// Serialize as a RESP BlobString
+    pub struct BlobString<'a>(pub Cow<'a, str>);
+
+    macro_rules! impl_initializers {
+        ($type_name:ident<$lt:lifetime>) => {
+            impl<$lt> From<String> for $type_name<$lt> {
+                fn from(s: String) -> Self {
+                    $type_name(Cow::from(s))
+                }
+            }
+            impl<$lt> From<&$lt str> for $type_name<$lt> {
+                fn from(s: &$lt str) -> Self {
+                    $type_name(Cow::from(s))
+                }
+            }
+        }
+    }
+    impl_initializers!(SimpleError<'a>);
+    impl_initializers!(BlobError<'a>);
+    impl_initializers!(SimpleString<'a>);
+    impl_initializers!(BlobString<'a>);
+
+    macro_rules! impl_deserialize {
+        ($type_name:ident<$lt:lifetime>: $token:ident => $visitor_name:ident) => {
+            struct $visitor_name;
+            impl<'de> Visitor<'de> for $visitor_name {
+                type Value = $type_name<'de>;
+
+                fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    write!(formatter, "expecting borrowed str")
+                }
+
+                fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Self::Value, E>
+                where
+                    E: serde::de::Error,
+                {
+                    Ok($type_name(Cow::from(v)))
+                }
+
+                fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+                where
+                    E: serde::de::Error,
+                {
+                    Ok($type_name(Cow::from(v.to_owned())))
+                }
+            }
+            impl<'de> Deserialize<'de> for $type_name<'de> {
+                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                where
+                    D: serde::Deserializer<'de>,
+                {
+                    deserializer.deserialize_newtype_struct($token, $visitor_name)
+                }
+            }
+        };
+    }
+    impl_deserialize!(SimpleError<'de>: SIMPLE_ERROR_TOKEN => SimpleErrorVisitor);
+    impl_deserialize!(BlobError<'de>: BLOB_ERROR_TOKEN => BlobErrorVisitor);
+    impl_deserialize!(SimpleString<'de>: SIMPLE_STRING_TOKEN => SimpleStringVisitor);
+    impl_deserialize!(BlobString<'de>: BLOB_STRING_TOKEN => BlobStringVisitor);
+
+    macro_rules! impl_serialize {
+        ($type_name:ident<$lt:lifetime>: $token:ident) => {
+            impl<$lt> Serialize for $type_name<$lt> {
+                fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                where
+                    S: serde::Serializer,
+                {
+                    serializer.serialize_newtype_struct($token, &self.0)
+                }
+            }
+        };
+    }
+    impl_serialize!(SimpleError<'a>: SIMPLE_ERROR_TOKEN);
+    impl_serialize!(BlobError<'a>: BLOB_ERROR_TOKEN);
+    impl_serialize!(SimpleString<'a>: SIMPLE_STRING_TOKEN);
+    impl_serialize!(BlobString<'a>: BLOB_STRING_TOKEN);
 }
 
 macro_rules! empty_visit {
@@ -276,9 +392,9 @@ impl<'de> Deserialize<'de> for OkResponse {
     where
         D: serde::Deserializer<'de>,
     {
-        let s: owned::SimpleString = Deserialize::deserialize(deserializer)?;
+        let s: borrowed::SimpleString = Deserialize::deserialize(deserializer)?;
         if s.0.eq_ignore_ascii_case("ok") {
-            return Err(de::Error::custom("exect +OK"));
+            return Err(de::Error::custom("expect +OK"));
         }
         Ok(OkResponse)
     }
@@ -290,5 +406,128 @@ impl Serialize for OkResponse {
         S: serde::Serializer,
     {
         serializer.serialize_newtype_struct(SIMPLE_STRING_TOKEN, "OK")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Serialize;
+
+    use super::{borrowed, owned};
+    use crate::test_utils::{test_deserialize, test_serialize};
+
+    #[test]
+    fn serialize_borrowed_types() {
+        test_serialize(
+            |mut s| {
+                let ss = borrowed::SimpleString::from("hello");
+                ss.serialize(&mut s).unwrap();
+            },
+            |buf| {
+                assert_eq!(buf, b"+hello\r\n");
+            },
+        );
+        test_serialize(
+            |mut s| {
+                let ss = borrowed::SimpleError::from("hello");
+                ss.serialize(&mut s).unwrap();
+            },
+            |buf| {
+                assert_eq!(buf, b"-hello\r\n");
+            },
+        );
+        test_serialize(
+            |mut s| {
+                let ss = borrowed::BlobString::from("hello");
+                ss.serialize(&mut s).unwrap();
+            },
+            |buf| {
+                assert_eq!(buf, b"$5\r\nhello\r\n");
+            },
+        );
+        test_serialize(
+            |mut s| {
+                let ss = borrowed::BlobError::from("hello");
+                ss.serialize(&mut s).unwrap();
+            },
+            |buf| {
+                assert_eq!(buf, b"!5\r\nhello\r\n");
+            },
+        );
+    }
+
+    #[test]
+    fn serialize_owned_types() {
+        test_serialize(
+            |mut s| {
+                let ss = owned::SimpleString::from("hello");
+                ss.serialize(&mut s).unwrap();
+            },
+            |buf| {
+                assert_eq!(buf, b"+hello\r\n");
+            },
+        );
+        test_serialize(
+            |mut s| {
+                let ss = owned::SimpleError::from("hello");
+                ss.serialize(&mut s).unwrap();
+            },
+            |buf| {
+                assert_eq!(buf, b"-hello\r\n");
+            },
+        );
+        test_serialize(
+            |mut s| {
+                let ss = owned::BlobString::from("hello");
+                ss.serialize(&mut s).unwrap();
+            },
+            |buf| {
+                assert_eq!(buf, b"$5\r\nhello\r\n");
+            },
+        );
+        test_serialize(
+            |mut s| {
+                let ss = owned::BlobError::from("hello");
+                ss.serialize(&mut s).unwrap();
+            },
+            |buf| {
+                assert_eq!(buf, b"!5\r\nhello\r\n");
+            },
+        );
+    }
+
+    #[test]
+    fn deserialize_borrowed_types() {
+        test_deserialize(b"+hello world\r\n", |value: borrowed::SimpleString| {
+            assert_eq!(value.0, "hello world");
+        });
+        test_deserialize(b"-ERR hello world\r\n", |value: borrowed::SimpleError| {
+            assert_eq!(value.0, "ERR hello world");
+        });
+        test_deserialize(b"$11\r\nhello world\r\n", |value: borrowed::BlobString| {
+            assert_eq!(value.0, "hello world");
+        });
+        test_deserialize(
+            b"!15\r\nERR hello world\r\n",
+            |value: borrowed::BlobError| {
+                assert_eq!(value.0, "ERR hello world");
+            },
+        );
+    }
+
+    #[test]
+    fn deserialize_owned_types() {
+        test_deserialize(b"+hello world\r\n", |value: owned::SimpleString| {
+            assert_eq!(value.0, "hello world");
+        });
+        test_deserialize(b"-ERR hello world\r\n", |value: owned::SimpleError| {
+            assert_eq!(value.0, "ERR hello world");
+        });
+        test_deserialize(b"$11\r\nhello world\r\n", |value: owned::BlobString| {
+            assert_eq!(value.0, "hello world");
+        });
+        test_deserialize(b"!15\r\nERR hello world\r\n", |value: owned::BlobError| {
+            assert_eq!(value.0, "ERR hello world");
+        });
     }
 }
