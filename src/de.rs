@@ -4,7 +4,7 @@ use std::{
 };
 
 use num::{CheckedAdd, CheckedMul};
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 
 use crate::{types::AttributeSkip, Error, Result};
 
@@ -361,22 +361,23 @@ where
     }
 }
 
-/// Create a new [`Deserializer`] from an underlying Read
-pub fn from_read<R: Read>(r: R) -> Deserializer<ReadReader<R>> {
-    Deserializer {
-        reader: ReadReader::from_read(r),
-        skip_attribute: true,
+impl<R: Read> Deserializer<ReadReader<R>> {
+    /// Create a new [`Deserializer`] from an underlying Read
+    pub fn from_read(r: R) -> Self {
+        Deserializer {
+            reader: ReadReader::from_read(r),
+            skip_attribute: true,
+        }
     }
 }
 
-/// Creates a new [`Deserializer`] from a slice of bytes
-pub fn from_slice<R>(slice: &R) -> Deserializer<RefReader<'_, R>>
-where
-    R: AsRef<[u8]> + ?Sized,
-{
-    Deserializer {
-        reader: RefReader::from_slice(slice),
-        skip_attribute: true,
+impl<'a, R: AsRef<[u8]> + ?Sized> Deserializer<RefReader<'a, R>> {
+    /// Creates a new [`Deserializer`] from a slice of bytes
+    pub fn from_slice(slice: &'a R) -> Self {
+        Deserializer {
+            reader: RefReader::from_slice(slice),
+            skip_attribute: true,
+        }
     }
 }
 
@@ -393,6 +394,39 @@ where
     pub fn get_consumed_bytes(&self) -> usize {
         self.reader.consumed_bytes()
     }
+}
+
+/// Deserialize an instance of type T from an I/O stream of RESP3
+pub fn from_read<R, T>(rd: R) -> Result<T>
+where
+    R: Read,
+    T: DeserializeOwned,
+{
+    let mut d = Deserializer::from_read(rd);
+    T::deserialize(&mut d)
+}
+
+/// Deserialize a temporary scoped-bound instance of type `T` from a
+/// slice, with zero-copy if possible.
+///
+/// Deserialization will be performed in zero-copy manner whenever
+/// it is possible, borrowing the data from the slice itself.
+/// For example, strings and byte-arrays won’t copied.
+///
+/// # Examples
+///
+/// ```rust
+/// let buf = b"*2\r\n:42\r\n+the Answer\r\n";
+/// let r: (usize, &str) = deseresp::from_slice(&buf).unwrap();
+/// assert_eq!(r, (42, "the Answer"));
+/// ```
+pub fn from_slice<'a, R, T>(input: &'a R) -> Result<T>
+where
+    R: AsRef<[u8]> + ?Sized,
+    T: Deserialize<'a>,
+{
+    let mut d = Deserializer::from_slice(input);
+    T::deserialize(&mut d)
 }
 
 impl<'de, R: Reader<'de>> Deserializer<R> {
@@ -1031,32 +1065,18 @@ impl<'de, 'a, R: Reader<'de> + 'a> serde::de::MapAccess<'de> for CountMapAccess<
 #[cfg(test)]
 #[allow(clippy::bool_assert_comparison)]
 mod tests {
-    use std::{collections::HashMap, io::Cursor};
+    use std::collections::HashMap;
 
     use serde::Deserialize;
 
     use super::*;
     use crate::{
-        test_utils::test_deserialize,
+        test_utils::{test_deserialize, test_deserialize_result},
         types::{
             owned::{BlobError, BlobString, SimpleError, SimpleString},
             WithAttribute,
         },
     };
-
-    fn test_deserialize_result<'de, T, F>(input: &'de [u8], test_fn: F)
-    where
-        T: Deserialize<'de>,
-        F: Fn(Result<T>),
-    {
-        let mut read_d = from_read(Cursor::new(Vec::from(input)));
-        let value: Result<T> = Deserialize::deserialize(&mut read_d);
-        test_fn(value);
-
-        let mut slice_d = from_slice(input);
-        let value: Result<T> = Deserialize::deserialize(&mut slice_d);
-        test_fn(value);
-    }
 
     #[test]
     fn test_blob_string() {

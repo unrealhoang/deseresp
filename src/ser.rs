@@ -23,6 +23,15 @@ pub fn from_write<W: Write>(w: W) -> Serializer<W> {
     Serializer { writer: w }
 }
 
+/// Serialize to Vec<u8>
+pub fn to_vec<S: Serialize>(s: &S) -> Result<Vec<u8>, Error> {
+    let mut result = Vec::new();
+    let mut serializer = from_write(&mut result);
+    s.serialize(&mut serializer)?;
+
+    Ok(result)
+}
+
 impl serde::ser::Error for Error {
     fn custom<T>(msg: T) -> Self
     where
@@ -712,252 +721,136 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::{
-        test_utils::test_serialize,
-        types::owned::{BlobError, BlobString, SimpleError, SimpleString},
-    };
+    use crate::types::owned::{BlobError, BlobString, SimpleError, SimpleString};
 
     #[test]
     fn test_serialize_bool() {
-        test_serialize(
-            |mut s| {
-                let bool_t = true;
-                bool_t.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"#t\r\n");
-            },
-        );
+        let bool_t = true;
+        let buf = to_vec(&bool_t).unwrap();
+        assert_eq!(buf, b"#t\r\n");
 
-        test_serialize(
-            |mut s| {
-                let bool_t = false;
-                bool_t.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"#f\r\n");
-            },
-        );
+        let bool_t = false;
+        let buf = to_vec(&bool_t).unwrap();
+        assert_eq!(buf, b"#f\r\n");
     }
 
     #[test]
     fn test_serialize_number() {
-        test_serialize(
-            |mut s| {
-                let num: i64 = 12345;
-                num.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b":12345\r\n");
-            },
-        );
+        let num: i64 = 12345;
+        let buf = to_vec(&num).unwrap();
+        assert_eq!(buf, b":12345\r\n");
 
-        test_serialize(
-            |mut s| {
-                let num: i64 = -12345;
-                num.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b":-12345\r\n");
-            },
-        );
+        let num: i64 = -12345;
+        let buf = to_vec(&num).unwrap();
+        assert_eq!(buf, b":-12345\r\n");
     }
 
     #[test]
     fn test_serialize_double() {
-        test_serialize(
-            |mut s| {
-                let num: f64 = 12345.1;
-                num.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b",12345.1\r\n");
-            },
-        );
+        let num: f64 = 12345.1;
+        let buf = to_vec(&num).unwrap();
+        assert_eq!(buf, b",12345.1\r\n");
 
-        test_serialize(
-            |mut s| {
-                let num: f64 = f64::NEG_INFINITY;
-                num.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b",-inf\r\n");
-            },
-        );
+        let num: f64 = f64::NEG_INFINITY;
+        let buf = to_vec(&num).unwrap();
+        assert_eq!(buf, b",-inf\r\n");
 
-        test_serialize(
-            |mut s| {
-                let num: f64 = f64::INFINITY;
-                num.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b",inf\r\n");
-            },
-        );
+        let num: f64 = f64::INFINITY;
+        let buf = to_vec(&num).unwrap();
+        assert_eq!(buf, b",inf\r\n");
     }
 
     #[test]
     fn test_serialize_char() {
-        test_serialize(
-            |mut s| {
-                let chr: char = 'e';
-                chr.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"+e\r\n");
-            },
-        );
+        let chr: char = 'e';
+        let buf = to_vec(&chr).unwrap();
+        assert_eq!(buf, b"+e\r\n");
     }
 
     #[test]
     fn test_serialize_str() {
-        test_serialize(
-            |mut s| {
-                let str: &str = "hello world";
-                str.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"+hello world\r\n");
-            },
-        );
+        let str: &str = "hello world";
+        let buf = to_vec(&str).unwrap();
+        assert_eq!(buf, b"+hello world\r\n");
     }
 
     #[test]
     fn test_serialize_option() {
-        test_serialize(
-            |mut s| {
-                let str: Option<&str> = None;
-                str.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"_\r\n");
-            },
-        );
+        let str: Option<&str> = None;
+        let buf = to_vec(&str).unwrap();
+        assert_eq!(buf, b"_\r\n");
 
-        test_serialize(
-            |mut s| {
-                let str: Option<&str> = Some("hello world");
-                str.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"+hello world\r\n");
-            },
-        );
+        let str: Option<&str> = Some("hello world");
+        let buf = to_vec(&str).unwrap();
+        assert_eq!(buf, b"+hello world\r\n");
     }
 
     #[test]
     fn test_serialize_unit() {
-        test_serialize(
-            |mut s| {
-                let unit: () = ();
-                unit.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"_\r\n");
-            },
-        );
+        let unit: () = ();
+        let buf = to_vec(&unit).unwrap();
+        assert_eq!(buf, b"_\r\n");
     }
 
     #[test]
     fn test_serialize_struct() {
         // newtype struct
-        test_serialize(
-            |mut s| {
-                #[derive(Serialize)]
-                struct NewType(usize);
+        #[derive(Serialize)]
+        struct NewType(usize);
 
-                let newtype = NewType(123);
-                newtype.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b":123\r\n");
-            },
-        );
+        let newtype = NewType(123);
+        let buf = to_vec(&newtype).unwrap();
+        assert_eq!(buf, b":123\r\n");
 
         // struct struct
-        test_serialize(
-            |mut s| {
-                #[derive(Serialize)]
-                struct StructStruct {
-                    a: usize,
-                    b: String,
-                }
+        #[derive(Serialize)]
+        struct StructStruct {
+            a: usize,
+            b: String,
+        }
 
-                let structstruct = StructStruct {
-                    a: 123,
-                    b: String::from("abc"),
-                };
-                structstruct.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"%2\r\n+a\r\n:123\r\n+b\r\n+abc\r\n");
-            },
-        );
+        let structstruct = StructStruct {
+            a: 123,
+            b: String::from("abc"),
+        };
+        let buf = to_vec(&structstruct).unwrap();
+        assert_eq!(buf, b"%2\r\n+a\r\n:123\r\n+b\r\n+abc\r\n");
 
         // unit struct
-        test_serialize(
-            |mut s| {
-                #[derive(Serialize)]
-                struct UnitT;
-                let unit: UnitT = UnitT;
-                unit.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"_\r\n");
-            },
-        );
+        #[derive(Serialize)]
+        struct UnitT;
+
+        let unit: UnitT = UnitT;
+        let buf = to_vec(&unit).unwrap();
+        assert_eq!(buf, b"_\r\n");
 
         // tuple struct
-        test_serialize(
-            |mut s| {
-                #[derive(Serialize)]
-                struct Tuple(usize, String);
+        #[derive(Serialize)]
+        struct Tuple(usize, String);
 
-                let tuple = Tuple(123, String::from("abcd"));
-                tuple.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"*2\r\n:123\r\n+abcd\r\n");
-            },
-        );
+        let tuple = Tuple(123, String::from("abcd"));
+        let buf = to_vec(&tuple).unwrap();
+        assert_eq!(buf, b"*2\r\n:123\r\n+abcd\r\n");
     }
 
     #[test]
     fn test_serialize_map() {
-        test_serialize(
-            |mut s| {
-                let mut map = BTreeMap::new();
-                map.insert("a", "b");
-                map.insert("c", "d");
-                map.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"%2\r\n+a\r\n+b\r\n+c\r\n+d\r\n");
-            },
-        );
+        let mut map = BTreeMap::new();
+        map.insert("a", "b");
+        map.insert("c", "d");
+        let buf = to_vec(&map).unwrap();
+        assert_eq!(buf, b"%2\r\n+a\r\n+b\r\n+c\r\n+d\r\n");
     }
 
     #[test]
     fn test_serialize_seq() {
-        test_serialize(
-            |mut s| {
-                let seq = vec!["a", "b", "c", "d"];
-                seq.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"*4\r\n+a\r\n+b\r\n+c\r\n+d\r\n");
-            },
-        );
+        let seq = vec!["a", "b", "c", "d"];
+        let buf = to_vec(&seq).unwrap();
+        assert_eq!(buf, b"*4\r\n+a\r\n+b\r\n+c\r\n+d\r\n");
 
-        test_serialize(
-            |mut s| {
-                let seq = (1, 3, String::from("abc"), 10.5);
-                seq.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"*4\r\n:1\r\n:3\r\n+abc\r\n,10.5\r\n");
-            },
-        );
+        let seq = (1, 3, String::from("abc"), 10.5);
+        let buf = to_vec(&seq).unwrap();
+        assert_eq!(buf, b"*4\r\n:1\r\n:3\r\n+abc\r\n,10.5\r\n");
     }
 
     #[test]
@@ -970,86 +863,44 @@ mod tests {
         }
 
         // struct variant
-        test_serialize(
-            |mut s| {
-                let struct_variant = Enum::Struct {
-                    a: 123,
-                    b: String::from("abc"),
-                };
-                struct_variant.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"%1\r\n+Struct\r\n%2\r\n+a\r\n:123\r\n+b\r\n+abc\r\n");
-            },
-        );
+        let struct_variant = Enum::Struct {
+            a: 123,
+            b: String::from("abc"),
+        };
+        let buf = to_vec(&struct_variant).unwrap();
+        assert_eq!(buf, b"%1\r\n+Struct\r\n%2\r\n+a\r\n:123\r\n+b\r\n+abc\r\n");
 
         // tuple variant
-        test_serialize(
-            |mut s| {
-                let tuple_variant = Enum::Tuple(123, String::from("abcd"));
-                tuple_variant.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"%1\r\n+Tuple\r\n*2\r\n:123\r\n+abcd\r\n");
-            },
-        );
+        let tuple_variant = Enum::Tuple(123, String::from("abcd"));
+        let buf = to_vec(&tuple_variant).unwrap();
+        assert_eq!(buf, b"%1\r\n+Tuple\r\n*2\r\n:123\r\n+abcd\r\n");
 
         // unit variant
-        test_serialize(
-            |mut s| {
-                let unit_variant = Enum::Unit;
-                unit_variant.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"%1\r\n+Unit\r\n_\r\n");
-            },
-        );
+        let unit_variant = Enum::Unit;
+        let buf = to_vec(&unit_variant).unwrap();
+        assert_eq!(buf, b"%1\r\n+Unit\r\n_\r\n");
     }
 
     #[test]
     fn test_specific_resp_type() {
         // simple error
-        test_serialize(
-            |mut s| {
-                let value = SimpleError(String::from("ERR error"));
-                value.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"-ERR error\r\n");
-            },
-        );
+        let value = SimpleError(String::from("ERR error"));
+        let buf = to_vec(&value).unwrap();
+        assert_eq!(buf, b"-ERR error\r\n");
 
         // blob error
-        test_serialize(
-            |mut s| {
-                let value = BlobError(String::from("ERR error"));
-                value.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"!9\r\nERR error\r\n");
-            },
-        );
+        let value = BlobError(String::from("ERR error"));
+        let buf = to_vec(&value).unwrap();
+        assert_eq!(buf, b"!9\r\nERR error\r\n");
 
         // simple string
-        test_serialize(
-            |mut s| {
-                let value = SimpleString(String::from("hello world"));
-                value.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"+hello world\r\n");
-            },
-        );
+        let value = SimpleString(String::from("hello world"));
+        let buf = to_vec(&value).unwrap();
+        assert_eq!(buf, b"+hello world\r\n");
 
         // blob string
-        test_serialize(
-            |mut s| {
-                let value = BlobString(String::from("hello world"));
-                value.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"$11\r\nhello world\r\n");
-            },
-        );
+        let value = BlobString(String::from("hello world"));
+        let buf = to_vec(&value).unwrap();
+        assert_eq!(buf, b"$11\r\nhello world\r\n");
     }
 }

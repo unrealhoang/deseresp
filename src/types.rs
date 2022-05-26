@@ -22,15 +22,19 @@ pub mod owned {
 
     /// Expects a SimpleError from deserializer,
     /// Serialize as a RESP SimpleError
+    #[derive(PartialEq, Eq, Debug)]
     pub struct SimpleError(pub String);
     /// Expects a BlobError from deserializer,
     /// Serialize as a RESP BlobError
+    #[derive(PartialEq, Eq, Debug)]
     pub struct BlobError(pub String);
     /// Expects a SimpleString from deserializer,
     /// Serialize as a RESP SimpleString
+    #[derive(PartialEq, Eq, Debug)]
     pub struct SimpleString(pub String);
     /// Expects a BlobString from deserializer,
     /// Serialize as a RESP BlobString
+    #[derive(PartialEq, Eq, Debug)]
     pub struct BlobString(pub String);
 
     macro_rules! impl_initializers {
@@ -112,15 +116,19 @@ pub mod borrowed {
 
     /// Expects a SimpleError from deserializer,
     /// Serialize as a RESP SimpleError
+    #[derive(PartialEq, Eq, Debug)]
     pub struct SimpleError<'a>(pub Cow<'a, str>);
     /// Expects a BlobError from deserializer,
     /// Serialize as a RESP BlobError
+    #[derive(PartialEq, Eq, Debug)]
     pub struct BlobError<'a>(pub Cow<'a, str>);
     /// Expects a SimpleString from deserializer,
     /// Serialize as a RESP SimpleString
+    #[derive(PartialEq, Eq, Debug)]
     pub struct SimpleString<'a>(pub Cow<'a, str>);
     /// Expects a BlobString from deserializer,
     /// Serialize as a RESP BlobString
+    #[derive(PartialEq, Eq, Debug)]
     pub struct BlobString<'a>(pub Cow<'a, str>);
 
     macro_rules! impl_initializers {
@@ -411,89 +419,45 @@ impl Serialize for OkResponse {
 
 #[cfg(test)]
 mod tests {
-    use serde::Serialize;
-
     use super::{borrowed, owned};
-    use crate::test_utils::{test_deserialize, test_serialize};
+    use crate::{test_utils::test_deserialize, to_vec};
 
     #[test]
     fn serialize_borrowed_types() {
-        test_serialize(
-            |mut s| {
-                let ss = borrowed::SimpleString::from("hello");
-                ss.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"+hello\r\n");
-            },
-        );
-        test_serialize(
-            |mut s| {
-                let ss = borrowed::SimpleError::from("hello");
-                ss.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"-hello\r\n");
-            },
-        );
-        test_serialize(
-            |mut s| {
-                let ss = borrowed::BlobString::from("hello");
-                ss.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"$5\r\nhello\r\n");
-            },
-        );
-        test_serialize(
-            |mut s| {
-                let ss = borrowed::BlobError::from("hello");
-                ss.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"!5\r\nhello\r\n");
-            },
-        );
+        let ss = borrowed::SimpleString::from("hello");
+        let buf = to_vec(&ss).unwrap();
+        assert_eq!(buf, b"+hello\r\n");
+
+        let ss = borrowed::SimpleError::from("hello");
+        let buf = to_vec(&ss).unwrap();
+        assert_eq!(buf, b"-hello\r\n");
+
+        let ss = borrowed::BlobString::from("hello");
+        let buf = to_vec(&ss).unwrap();
+        assert_eq!(buf, b"$5\r\nhello\r\n");
+
+        let ss = borrowed::BlobError::from("hello");
+        let buf = to_vec(&ss).unwrap();
+        assert_eq!(buf, b"!5\r\nhello\r\n");
     }
 
     #[test]
     fn serialize_owned_types() {
-        test_serialize(
-            |mut s| {
-                let ss = owned::SimpleString::from("hello");
-                ss.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"+hello\r\n");
-            },
-        );
-        test_serialize(
-            |mut s| {
-                let ss = owned::SimpleError::from("hello");
-                ss.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"-hello\r\n");
-            },
-        );
-        test_serialize(
-            |mut s| {
-                let ss = owned::BlobString::from("hello");
-                ss.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"$5\r\nhello\r\n");
-            },
-        );
-        test_serialize(
-            |mut s| {
-                let ss = owned::BlobError::from("hello");
-                ss.serialize(&mut s).unwrap();
-            },
-            |buf| {
-                assert_eq!(buf, b"!5\r\nhello\r\n");
-            },
-        );
+        let ss = owned::SimpleString::from("hello");
+        let buf = to_vec(&ss).unwrap();
+        assert_eq!(buf, b"+hello\r\n");
+
+        let ss = owned::SimpleError::from("hello");
+        let buf = to_vec(&ss).unwrap();
+        assert_eq!(buf, b"-hello\r\n");
+
+        let ss = owned::BlobString::from("hello");
+        let buf = to_vec(&ss).unwrap();
+        assert_eq!(buf, b"$5\r\nhello\r\n");
+
+        let ss = owned::BlobError::from("hello");
+        let buf = to_vec(&ss).unwrap();
+        assert_eq!(buf, b"!5\r\nhello\r\n");
     }
 
     #[test]

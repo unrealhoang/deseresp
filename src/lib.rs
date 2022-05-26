@@ -1,3 +1,4 @@
+#[doc = include_str!("../README.md")]
 mod de;
 mod error;
 mod ser;
@@ -5,7 +6,7 @@ pub mod types;
 
 pub use de::{from_read, from_slice, Deserializer};
 pub use error::{Error, Result};
-pub use ser::{from_write, Serializer};
+pub use ser::{from_write, to_vec, Serializer};
 
 #[cfg(test)]
 pub(crate) mod test_utils {
@@ -13,32 +14,33 @@ pub(crate) mod test_utils {
 
     use serde::Deserialize;
 
-    use crate::{from_read, from_slice, from_write, Serializer};
-
-    pub(crate) fn test_serialize<F, T>(serialize_fn: F, test_fn: T)
-    where
-        F: Fn(Serializer<&mut Vec<u8>>),
-        T: Fn(&[u8]),
-    {
-        let mut buf = Vec::new();
-        {
-            let serializer = from_write(&mut buf);
-            serialize_fn(serializer);
-        }
-        test_fn(&buf[..]);
-    }
+    use crate::Deserializer;
 
     pub(crate) fn test_deserialize<'de, T, F>(input: &'de [u8], test_fn: F)
     where
         T: Deserialize<'de>,
         F: Fn(T),
     {
-        let mut read_d = from_read(Cursor::new(Vec::from(input)));
+        let mut read_d = Deserializer::from_read(Cursor::new(Vec::from(input)));
         let value: T = Deserialize::deserialize(&mut read_d).unwrap();
         test_fn(value);
 
-        let mut slice_d = from_slice(input);
+        let mut slice_d = Deserializer::from_slice(input);
         let value: T = Deserialize::deserialize(&mut slice_d).unwrap();
+        test_fn(value);
+    }
+
+    pub(crate) fn test_deserialize_result<'de, T, F>(input: &'de [u8], test_fn: F)
+    where
+        T: Deserialize<'de>,
+        F: Fn(Result<T, super::Error>),
+    {
+        let mut read_d = Deserializer::from_read(Cursor::new(Vec::from(input)));
+        let value: Result<T, super::Error> = Deserialize::deserialize(&mut read_d);
+        test_fn(value);
+
+        let mut slice_d = Deserializer::from_slice(input);
+        let value: Result<T, super::Error> = Deserialize::deserialize(&mut slice_d);
         test_fn(value);
     }
 }
