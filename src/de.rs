@@ -6,7 +6,10 @@ use std::{
 use num::{CheckedAdd, CheckedMul};
 use serde::{de::DeserializeOwned, Deserialize};
 
-use crate::{types::AttributeSkip, Error, Result};
+use crate::{
+    types::{AttributeSkip, PushSkip},
+    Error, Result,
+};
 
 /// Unification of both borrowed and non-borrowed reference types.
 pub enum Reference<'b, 'c, T: ?Sized + 'static> {
@@ -346,6 +349,7 @@ impl<'de, R: AsRef<[u8]> + ?Sized> Reader<'de> for RefReader<'de, R> {
 pub struct Deserializer<R> {
     reader: R,
     skip_attribute: bool,
+    skip_push: bool,
 }
 
 impl<R> ReadReader<R>
@@ -367,6 +371,7 @@ impl<R: Read> Deserializer<ReadReader<R>> {
         Deserializer {
             reader: ReadReader::from_read(r),
             skip_attribute: true,
+            skip_push: true,
         }
     }
 }
@@ -377,6 +382,7 @@ impl<'a, R: AsRef<[u8]> + ?Sized> Deserializer<RefReader<'a, R>> {
         Deserializer {
             reader: RefReader::from_slice(slice),
             skip_attribute: true,
+            skip_push: true,
         }
     }
 }
@@ -455,20 +461,36 @@ impl<'de, R: Reader<'de>> Deserializer<R> {
     }
 
     fn skip_attribute(&mut self) -> Result<()> {
+        // TODO: fast skip by consuming all marker type
+        // instead of rely on consuming visitor
         let _s: AttributeSkip = Deserialize::deserialize(self)?;
 
         Ok(())
     }
 
+    fn skip_push(&mut self) -> Result<()> {
+        let _s: PushSkip = Deserialize::deserialize(self)?;
+
+        Ok(())
+    }
+
     fn peek_skip_attribute(&mut self) -> Result<u8> {
-        let peek = self.reader.peek_u8()?.ok_or_else(Error::eof)?;
+        let peek = self.peek()?;
 
         if peek == b'|' && self.skip_attribute {
             self.skip_attribute()?;
             return self.reader.peek_u8()?.ok_or_else(Error::eof);
         }
+        if peek == b'>' && self.skip_push {
+            self.skip_push()?;
+            return self.reader.peek_u8()?.ok_or_else(Error::eof);
+        }
 
         Ok(peek)
+    }
+
+    fn peek(&mut self) -> Result<u8> {
+        self.reader.peek_u8()?.ok_or_else(Error::eof)
     }
 }
 
@@ -530,6 +552,7 @@ where
             // array
             b'*' => self.deserialize_seq(visitor),
             b'~' => self.deserialize_seq(visitor),
+            b'>' => self.deserialize_seq(visitor),
             // map
             b'%' => self.deserialize_map(visitor),
             b'|' => self.deserialize_map(visitor),
@@ -869,8 +892,15 @@ where
                     self.reader.read_crlf()?;
                     visitor.visit_map(CountMapAccess::new(self, len))
                 } else {
-                    Err(Error::expected_marker("blob string"))
+                    Err(Error::expected_marker("attribute"))
                 }
+            }
+            crate::types::PUSH_TOKEN => {
+                if peek != b'>' {
+                    return Err(Error::expected_marker("push"));
+                }
+                self.skip_push = false;
+                visitor.visit_newtype_struct(self)
             }
             _ => visitor.visit_newtype_struct(self),
         }
@@ -895,7 +925,14 @@ where
                 self.reader.read_crlf()?;
                 visitor.visit_seq(CountSeqAccess::new(self, len))
             }
-            _ => Err(Error::expected_marker("array|set")),
+            b'>' => {
+                self.skip_push = true;
+                self.reader.read_u8()?;
+                let len = self.reader.read_length()?;
+                self.reader.read_crlf()?;
+                visitor.visit_seq(CountSeqAccess::new(self, len))
+            }
+            _ => Err(Error::expected_marker("array|set|push")),
         }
     }
 
@@ -918,7 +955,7 @@ where
         let peek = self.reader.peek_u8()?.ok_or_else(Error::eof)?;
 
         match name {
-            crate::types::ATTRIBUTE_TOKEN => {
+            crate::types::WITH_ATTRIBUTE_TOKEN => {
                 if peek == b'|' {
                     let last_skip = self.skip_attribute;
                     self.skip_attribute = false;
@@ -969,7 +1006,7 @@ where
     where
         V: serde::de::Visitor<'de>,
     {
-        self.deserialize_map(visitor)
+        self.deserialize_any(visitor)
     }
 
     fn deserialize_enum<V>(
@@ -1024,6 +1061,10 @@ impl<'de, 'a, R: Reader<'de> + 'a> serde::de::SeqAccess<'de> for CountSeqAccess<
         } else {
             Ok(None)
         }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.len)
     }
 }
 
@@ -1281,6 +1322,32 @@ mod tests {
             |with_attr: WithAttribute<Test, usize>| {
                 let (attr, value) = with_attr.into_inner();
                 assert_eq!(attr.a, 200);
+                assert_eq!(value, 300);
+            },
+        );
+
+        //  |1\r\n
+        //      +a\r\n
+        //      |1\r\n
+        //          +b\r\n
+        //          +c\r\n
+        //      :200\r\n
+        //  :300\r\n
+        #[derive(Deserialize)]
+        struct Attr {
+            a: WithAttribute<InnerAttr, usize>,
+        }
+        #[derive(Deserialize)]
+        struct InnerAttr {
+            b: String,
+        }
+        test_deserialize(
+            b"|1\r\n+a\r\n|1\r\n+b\r\n+c\r\n:200\r\n:300\r\n",
+            |with_attr: WithAttribute<Attr, usize>| {
+                let (attr, value) = with_attr.into_inner();
+                let (attr_attr, attr_value) = attr.a.into_inner();
+                assert_eq!(attr_attr.b, "c");
+                assert_eq!(attr_value, 200);
                 assert_eq!(value, 300);
             },
         );

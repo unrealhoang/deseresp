@@ -9,7 +9,10 @@ use serde::{
 };
 
 use crate::{
-    types::{BLOB_ERROR_TOKEN, BLOB_STRING_TOKEN, SIMPLE_ERROR_TOKEN, SIMPLE_STRING_TOKEN},
+    types::{
+        BLOB_ERROR_TOKEN, BLOB_STRING_TOKEN, PUSH_TOKEN, SIMPLE_ERROR_TOKEN,
+        SIMPLE_STRING_TOKEN, WITH_ATTRIBUTE_TOKEN,
+    },
     Error,
 };
 
@@ -49,6 +52,7 @@ enum SeqKind {
 pub struct SeqSerializer<'a, W> {
     se: &'a mut Serializer<W>,
     kind: SeqKind,
+    with_key: bool,
 }
 
 impl<'a, W> SeqSerializer<'a, W> {
@@ -56,6 +60,7 @@ impl<'a, W> SeqSerializer<'a, W> {
         SeqSerializer {
             se,
             kind: SeqKind::KnownLength,
+            with_key: true,
         }
     }
 
@@ -63,7 +68,13 @@ impl<'a, W> SeqSerializer<'a, W> {
         SeqSerializer {
             se,
             kind: SeqKind::UnknownLength,
+            with_key: true,
         }
+    }
+
+    fn without_key(mut self) -> Self {
+        self.with_key = false;
+        self
     }
 }
 
@@ -181,7 +192,9 @@ impl<'a, W: Write> SerializeStruct for SeqSerializer<'a, W> {
     where
         T: serde::Serialize,
     {
-        key.serialize(&mut *self.se)?;
+        if self.with_key {
+            key.serialize(&mut *self.se)?;
+        }
         value.serialize(&mut *self.se)
     }
 
@@ -205,7 +218,9 @@ impl<'a, W: Write> SerializeStructVariant for SeqSerializer<'a, W> {
     where
         T: Serialize,
     {
-        key.serialize(&mut *self.se)?;
+        if self.with_key {
+            key.serialize(&mut *self.se)?;
+        }
         value.serialize(&mut *self.se)
     }
 
@@ -215,6 +230,19 @@ impl<'a, W: Write> SerializeStructVariant for SeqSerializer<'a, W> {
             SeqKind::KnownLength => Ok(()),
         }
     }
+}
+
+macro_rules! serialize_err {
+    ($name:ident$(<$gen_name:ident: ?Sized>)?, $($ty:ty),* => $expr:expr) => {
+        fn $name$(<$gen_name: ?Sized>)?(self, $(_: $ty),*) -> Result<Self::Ok, Self::Error> {
+            $expr
+        }
+    };
+    ($name:ident$(<$gen_name:ident: ?Sized>)?, $($ty:ty),*: $return_typ:ty => $expr:expr) => {
+        fn $name$(<$gen_name: ?Sized>)?(self, $(_: $ty),*) -> $return_typ {
+            $expr
+        }
+    };
 }
 
 /// Custom type Serializer for Specific RESP types,
@@ -236,53 +264,59 @@ impl<'a, W: Write> serde::Serializer for RespSpecificSerializer<'a, W> {
     type SerializeStruct = serde::ser::Impossible<(), Error>;
     type SerializeStructVariant = serde::ser::Impossible<(), Error>;
 
-    fn serialize_bool(self, _: bool) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("bool"))
-    }
-
-    fn serialize_i8(self, _: i8) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("i8"))
-    }
-
-    fn serialize_i16(self, _: i16) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("i16"))
-    }
-
-    fn serialize_i32(self, _: i32) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("i32"))
-    }
-
-    fn serialize_i64(self, _: i64) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("i64"))
-    }
-
-    fn serialize_u8(self, _: u8) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("u8"))
-    }
-
-    fn serialize_u16(self, _: u16) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("u16"))
-    }
-
-    fn serialize_u32(self, _: u32) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("u32"))
-    }
-
-    fn serialize_u64(self, _: u64) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("u64"))
-    }
-
-    fn serialize_f32(self, _: f32) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("f32"))
-    }
-
-    fn serialize_f64(self, _: f64) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("f64"))
-    }
-
-    fn serialize_char(self, _: char) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("char"))
-    }
+    serialize_err!(serialize_bool, bool => Err(Error::unexpected_value("bool")));
+    serialize_err!(serialize_i8, i8 => Err(Error::unexpected_value("i8")));
+    serialize_err!(serialize_i16, i16 => Err(Error::unexpected_value("i16")));
+    serialize_err!(serialize_i32, i32 => Err(Error::unexpected_value("i32")));
+    serialize_err!(serialize_i64, i64 => Err(Error::unexpected_value("i64")));
+    serialize_err!(serialize_u8, u8 => Err(Error::unexpected_value("u8")));
+    serialize_err!(serialize_u16, u16 => Err(Error::unexpected_value("u16")));
+    serialize_err!(serialize_u32, u32 => Err(Error::unexpected_value("u32")));
+    serialize_err!(serialize_u64, u64 => Err(Error::unexpected_value("u64")));
+    serialize_err!(serialize_f32, f32 => Err(Error::unexpected_value("f32")));
+    serialize_err!(serialize_f64, f64 => Err(Error::unexpected_value("f64")));
+    serialize_err!(serialize_char, char => Err(Error::unexpected_value("char")));
+    serialize_err!(serialize_none, => Err(Error::unexpected_value("none")));
+    serialize_err!(serialize_unit, => Err(Error::unexpected_value("unit")));
+    serialize_err!(serialize_some<T: ?Sized>, &T => Err(Error::unexpected_value("some")));
+    serialize_err!(serialize_unit_struct, &'static str => Err(Error::unexpected_value("unit")));
+    serialize_err!(serialize_unit_variant, &'static str, u32, &'static str =>
+        Err(Error::unexpected_value("unit_variant"))
+    );
+    serialize_err!(serialize_newtype_variant<T: ?Sized>, &'static str, u32, &'static str, &T =>
+        Err(Error::unexpected_value("newtype_variant"))
+    );
+    serialize_err!(serialize_struct_variant, &'static str, u32, &'static str, usize: Result<Self::SerializeStructVariant, Self::Error> =>
+        Err(Error::unexpected_value("struct_variant"))
+    );
+    serialize_err!(serialize_seq, Option<usize>:
+        Result<Self::SerializeSeq, Self::Error> =>
+        Err(Error::unexpected_value("seq"))
+    );
+    serialize_err!(serialize_tuple, usize:
+        Result<Self::SerializeTuple, Self::Error> =>
+        Err(Error::unexpected_value("tuple"))
+    );
+    serialize_err!(serialize_tuple_struct, &'static str, usize:
+        Result<Self::SerializeTupleStruct, Self::Error> =>
+        Err(Error::unexpected_value("tuple_struct"))
+    );
+    serialize_err!(serialize_tuple_variant,
+        &'static str, u32, &'static str, usize:
+        Result<Self::SerializeTupleStruct, Self::Error> =>
+        Err(Error::unexpected_value("tuple_variant"))
+    );
+    serialize_err!(serialize_map, Option<usize>:
+        Result<Self::SerializeMap, Self::Error> =>
+        Err(Error::unexpected_value("map"))
+    );
+    serialize_err!(serialize_struct, &'static str, usize:
+        Result<Self::SerializeMap, Self::Error> =>
+        Err(Error::unexpected_value("struct"))
+    );
+    serialize_err!(serialize_newtype_struct<T: ?Sized>, &'static str, &T =>
+        Err(Error::unexpected_value("struct"))
+    );
 
     fn serialize_str(self, v: &str) -> Result<Self::Ok, Self::Error> {
         match self.resp_kind {
@@ -310,105 +344,100 @@ impl<'a, W: Write> serde::Serializer for RespSpecificSerializer<'a, W> {
         let s = str::from_utf8(v).map_err(|e| Error::utf8(e.valid_up_to()))?;
         self.serialize_str(s)
     }
+}
 
-    fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("none"))
-    }
+struct PushSerializer<'a, W: Write> {
+    se: &'a mut Serializer<W>,
+}
 
-    fn serialize_some<T: ?Sized>(self, _: &T) -> Result<Self::Ok, Self::Error>
-    where
-        T: Serialize,
-    {
-        Err(Error::unexpected_value("some"))
-    }
+impl<'a, W: Write> serde::Serializer for PushSerializer<'a, W> {
+    type Ok = ();
+    type Error = Error;
+    type SerializeSeq = SeqSerializer<'a, W>;
+    type SerializeTuple = SeqSerializer<'a, W>;
+    type SerializeTupleStruct = SeqSerializer<'a, W>;
+    type SerializeTupleVariant = SeqSerializer<'a, W>;
+    type SerializeMap = SeqSerializer<'a, W>;
+    type SerializeStruct = SeqSerializer<'a, W>;
+    type SerializeStructVariant = SeqSerializer<'a, W>;
 
-    fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("unit"))
-    }
-
-    fn serialize_unit_struct(self, _: &'static str) -> Result<Self::Ok, Self::Error> {
-        Err(Error::unexpected_value("unit_struct"))
-    }
-
-    fn serialize_unit_variant(
-        self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
-    ) -> Result<Self::Ok, Self::Error> {
+    serialize_err!(serialize_bool, bool => Err(Error::unexpected_value("bool")));
+    serialize_err!(serialize_i8, i8 => Err(Error::unexpected_value("i8")));
+    serialize_err!(serialize_i16, i16 => Err(Error::unexpected_value("i16")));
+    serialize_err!(serialize_i32, i32 => Err(Error::unexpected_value("i32")));
+    serialize_err!(serialize_i64, i64 => Err(Error::unexpected_value("i64")));
+    serialize_err!(serialize_u8, u8 => Err(Error::unexpected_value("u8")));
+    serialize_err!(serialize_u16, u16 => Err(Error::unexpected_value("u16")));
+    serialize_err!(serialize_u32, u32 => Err(Error::unexpected_value("u32")));
+    serialize_err!(serialize_u64, u64 => Err(Error::unexpected_value("u64")));
+    serialize_err!(serialize_f32, f32 => Err(Error::unexpected_value("f32")));
+    serialize_err!(serialize_f64, f64 => Err(Error::unexpected_value("f64")));
+    serialize_err!(serialize_char, char => Err(Error::unexpected_value("char")));
+    serialize_err!(serialize_none, => Err(Error::unexpected_value("none")));
+    serialize_err!(serialize_unit, => Err(Error::unexpected_value("unit")));
+    serialize_err!(serialize_some<T: ?Sized>, &T => Err(Error::unexpected_value("some")));
+    serialize_err!(serialize_unit_struct, &'static str => Err(Error::unexpected_value("unit_struct")));
+    serialize_err!(serialize_unit_variant, &'static str, u32, &'static str =>
         Err(Error::unexpected_value("unit_variant"))
-    }
-
-    fn serialize_newtype_struct<T: ?Sized>(
-        self,
-        _: &'static str,
-        _: &T,
-    ) -> Result<Self::Ok, Self::Error>
-    where
-        T: Serialize,
-    {
-        Err(Error::unexpected_value("newtype_struct"))
-    }
-
-    fn serialize_newtype_variant<T: ?Sized>(
-        self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
-        _: &T,
-    ) -> Result<Self::Ok, Self::Error>
-    where
-        T: Serialize,
-    {
+    );
+    serialize_err!(serialize_newtype_variant<T: ?Sized>, &'static str, u32, &'static str, &T =>
         Err(Error::unexpected_value("newtype_variant"))
+    );
+    serialize_err!(serialize_str, &str => Err(Error::unexpected_value("string")));
+    serialize_err!(serialize_bytes, &[u8] => Err(Error::unexpected_value("bytes")));
+    serialize_err!(serialize_newtype_struct<T: ?Sized>, &'static str, &T =>
+        Err(Error::unexpected_value("newtype_struct"))
+    );
+    serialize_err!(serialize_map, Option<usize>: Result<Self::SerializeMap, Self::Error> => Err(Error::unexpected_value("map")));
+
+    fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+        if let Some(len) = len {
+            self.serialize_tuple(len)
+        } else {
+            Err(Error::unexpected_value("unknown len seq"))
+        }
     }
 
-    fn serialize_seq(self, _: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
-        Err(Error::unexpected_value("seq"))
-    }
-
-    fn serialize_tuple(self, _: usize) -> Result<Self::SerializeTuple, Self::Error> {
-        Err(Error::unexpected_value("tuple"))
+    fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error> {
+        self.se.write_push_len_marker(len)?;
+        Ok(SeqSerializer::known_length(self.se).without_key())
     }
 
     fn serialize_tuple_struct(
         self,
-        _: &'static str,
-        _: usize,
+        _name: &'static str,
+        len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        Err(Error::unexpected_value("tuple_struct"))
+        self.serialize_tuple(len)
     }
 
     fn serialize_tuple_variant(
         self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
-        _: usize,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        Err(Error::unexpected_value("tuple_variant"))
-    }
-
-    fn serialize_map(self, _: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
-        Err(Error::unexpected_value("map"))
+        self.serialize_tuple(len)
     }
 
     fn serialize_struct(
         self,
-        _: &'static str,
-        _: usize,
+        _name: &'static str,
+        len: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
-        Err(Error::unexpected_value("struct"))
+        self.se.write_push_len_marker(len)?;
+        Ok(SeqSerializer::known_length(self.se).without_key())
     }
 
     fn serialize_struct_variant(
         self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
-        _: usize,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+        len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        Err(Error::unexpected_value("struct_variant"))
+        self.serialize_struct(variant, len)
     }
 }
 
@@ -478,6 +507,11 @@ impl<W: Write> Serializer<W> {
     }
     fn write_null(&mut self) -> Result<(), Error> {
         write!(self.writer, "_\r\n").map_err(Error::io)?;
+
+        Ok(())
+    }
+    fn write_push_len_marker(&mut self, len: usize) -> Result<(), Error> {
+        write!(self.writer, ">{}\r\n", len).map_err(Error::io)?;
 
         Ok(())
     }
@@ -623,6 +657,10 @@ impl<'a, W: Write> serde::Serializer for &'a mut Serializer<W> {
                 };
                 value.serialize(se)
             }
+            PUSH_TOKEN => {
+                let se = PushSerializer { se: self };
+                value.serialize(se)
+            }
             _ => value.serialize(self),
         }
     }
@@ -662,10 +700,13 @@ impl<'a, W: Write> serde::Serializer for &'a mut Serializer<W> {
 
     fn serialize_tuple_struct(
         self,
-        _name: &'static str,
+        name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        self.serialize_seq(Some(len))
+        match name {
+            WITH_ATTRIBUTE_TOKEN => Ok(SeqSerializer::known_length(self)),
+            _ => self.serialize_seq(Some(len)),
+        }
     }
 
     /// Serialize as { variant => [tuple ele, .. ] }
@@ -721,7 +762,6 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::types::owned::{BlobError, BlobString, SimpleError, SimpleString};
 
     #[test]
     fn test_serialize_bool() {
@@ -879,28 +919,5 @@ mod tests {
         let unit_variant = Enum::Unit;
         let buf = to_vec(&unit_variant).unwrap();
         assert_eq!(buf, b"%1\r\n+Unit\r\n_\r\n");
-    }
-
-    #[test]
-    fn test_specific_resp_type() {
-        // simple error
-        let value = SimpleError(String::from("ERR error"));
-        let buf = to_vec(&value).unwrap();
-        assert_eq!(buf, b"-ERR error\r\n");
-
-        // blob error
-        let value = BlobError(String::from("ERR error"));
-        let buf = to_vec(&value).unwrap();
-        assert_eq!(buf, b"!9\r\nERR error\r\n");
-
-        // simple string
-        let value = SimpleString(String::from("hello world"));
-        let buf = to_vec(&value).unwrap();
-        assert_eq!(buf, b"+hello world\r\n");
-
-        // blob string
-        let value = BlobString(String::from("hello world"));
-        let buf = to_vec(&value).unwrap();
-        assert_eq!(buf, b"$11\r\nhello world\r\n");
     }
 }

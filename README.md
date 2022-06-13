@@ -21,6 +21,7 @@ assert_eq!(source, (42, "the Answer"));
 ```
 
 Serialize/Deserialize specific RESP's types with:
+BlobError:
 ```rust
 use deseresp::types::borrowed::BlobError;
 
@@ -30,6 +31,18 @@ assert_eq!(&buf, b"*2\r\n:42\r\n!10\r\nthe Answer\r\n");
 
 let source: (usize, BlobError) = deseresp::from_slice(&buf).unwrap();
 assert_eq!(source, (42, BlobError::from("the Answer")));
+```
+
+Push:
+```rust
+use deseresp::types::Push;
+
+let buf = deseresp::to_vec(&Push(("message", "channel", "data"))).unwrap();
+
+assert_eq!(&buf, b">3\r\n+message\r\n+channel\r\n+data\r\n");
+
+let source: Push<(&str, &str, &str)> = deseresp::from_slice(&buf).unwrap();
+assert_eq!(source.into_inner(), ("message", "channel", "data"));
 ```
 
 Advance usage, zero-copy network parsing:

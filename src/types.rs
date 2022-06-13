@@ -6,7 +6,9 @@ pub(crate) const BLOB_ERROR_TOKEN: &str = "$BulkError";
 pub(crate) const SIMPLE_STRING_TOKEN: &str = "$SimpleString";
 pub(crate) const BLOB_STRING_TOKEN: &str = "$BulkString";
 pub(crate) const ATTRIBUTE_SKIP_TOKEN: &str = "$AttributeSkip";
-pub(crate) const ATTRIBUTE_TOKEN: &str = "$WithAttribute";
+pub(crate) const ATTRIBUTE_TOKEN: &str = "$Attribute";
+pub(crate) const WITH_ATTRIBUTE_TOKEN: &str = "$WithAttribute";
+pub(crate) const PUSH_TOKEN: &str = "$Push";
 
 use std::marker::PhantomData;
 
@@ -221,6 +223,9 @@ macro_rules! empty_visit {
 /// Custom struct to expect an attribute from [`crate::Deserializer`]
 /// and ignore its value
 pub(crate) struct AttributeSkip;
+/// Custom struct to expect a push value from [`crate::Deserializer`]
+/// and ignore its value
+pub(crate) struct PushSkip;
 /// Custom struct to expect a value from [`crate::Deserializer`],
 /// and ignore its value
 pub struct AnySkip;
@@ -310,6 +315,16 @@ impl<'de> Deserialize<'de> for AttributeSkip {
     }
 }
 
+impl<'de> Deserialize<'de> for PushSkip {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_newtype_struct(PUSH_TOKEN, AnySkipVisitor)?;
+        Ok(PushSkip)
+    }
+}
+
 impl<'de> Deserialize<'de> for AnySkip {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -385,10 +400,65 @@ where
         D: serde::Deserializer<'de>,
     {
         deserializer.deserialize_tuple_struct(
-            ATTRIBUTE_TOKEN,
+            WITH_ATTRIBUTE_TOKEN,
             2,
             WithAttributeVisitor::<A, V>(PhantomData),
         )
+    }
+}
+
+/// Wraps a push value
+pub struct Push<P>(pub P);
+
+impl<P> Push<P> {
+    pub fn into_inner(self) -> P {
+        self.0
+    }
+}
+
+struct PushVisitor<'de, P>(&'de PhantomData<P>);
+
+impl<'de, P> Visitor<'de> for PushVisitor<'de, P>
+where
+    P: Deserialize<'de>,
+{
+    type Value = Push<P>;
+
+    fn visit_newtype_struct<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let inner = P::deserialize(deserializer)?;
+
+        Ok(Push(inner))
+    }
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "expecting newtype")
+    }
+}
+
+impl<'de, P> Deserialize<'de> for Push<P>
+where
+    P: Deserialize<'de> + 'de,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_newtype_struct(PUSH_TOKEN, PushVisitor(&PhantomData))
+    }
+}
+
+impl<P> Serialize for Push<P>
+where
+    P: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_newtype_struct(PUSH_TOKEN, &self.0)
     }
 }
 
@@ -419,7 +489,9 @@ impl Serialize for OkResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{borrowed, owned};
+    use std::borrow::Cow;
+
+    use super::*;
     use crate::{test_utils::test_deserialize, to_vec};
 
     #[test]
@@ -493,5 +565,60 @@ mod tests {
         test_deserialize(b"!15\r\nERR hello world\r\n", |value: owned::BlobError| {
             assert_eq!(value.0, "ERR hello world");
         });
+    }
+
+    #[test]
+    fn deserialize_push_type() {
+        test_deserialize(
+            b">2\r\n+message\r\n+hello world\r\n",
+            |value: Push<(String, String)>| {
+                let s = value.into_inner();
+                assert_eq!(&s.0, "message");
+                assert_eq!(&s.1, "hello world");
+            },
+        );
+
+        #[derive(Deserialize)]
+        struct ComplexData<'a> {
+            #[serde(borrow)]
+            push_type: Cow<'a, str>,
+            #[serde(borrow)]
+            channel: Cow<'a, str>,
+            #[serde(borrow)]
+            value: Cow<'a, str>,
+        }
+        test_deserialize(
+            b">3\r\n+message\r\n+channel\r\n+value\r\n",
+            |value: Push<ComplexData<'_>>| {
+                let value = value.into_inner();
+                assert_eq!(value.push_type, "message");
+                assert_eq!(value.channel, "channel");
+                assert_eq!(value.value, "value");
+            },
+        );
+    }
+
+    #[test]
+    fn serialize_push_type() {
+        let value = Push(("a", "b", 100));
+        let buf = to_vec(&value).unwrap();
+        assert_eq!(buf, b">3\r\n+a\r\n+b\r\n:100\r\n");
+
+        #[derive(Deserialize, Serialize)]
+        struct ComplexData<'a> {
+            #[serde(borrow)]
+            push_type: Cow<'a, str>,
+            #[serde(borrow)]
+            channel: Cow<'a, str>,
+            #[serde(borrow)]
+            value: Cow<'a, str>,
+        }
+        let value = Push(ComplexData {
+            push_type: "message".into(),
+            channel: "channel".into(),
+            value: "value".into(),
+        });
+        let buf = to_vec(&value).unwrap();
+        assert_eq!(buf, b">3\r\n+message\r\n+channel\r\n+value\r\n");
     }
 }
