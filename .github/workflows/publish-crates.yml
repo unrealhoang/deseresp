@@ -15,6 +15,7 @@ jobs:
     - name: publish crates
       uses: katyo/publish-crates@v1
       with:
+        registry-token: ${{ secrets.CRATES_IO_TOKEN }}
         # Github API token
         #token: # optional, default is ${{ github.token }}
         # Path to Rust crate or workspace
