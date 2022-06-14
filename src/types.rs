@@ -6,7 +6,6 @@ pub(crate) const BLOB_ERROR_TOKEN: &str = "$BulkError";
 pub(crate) const SIMPLE_STRING_TOKEN: &str = "$SimpleString";
 pub(crate) const BLOB_STRING_TOKEN: &str = "$BulkString";
 pub(crate) const ATTRIBUTE_SKIP_TOKEN: &str = "$AttributeSkip";
-pub(crate) const ATTRIBUTE_TOKEN: &str = "$Attribute";
 pub(crate) const WITH_ATTRIBUTE_TOKEN: &str = "$WithAttribute";
 pub(crate) const PUSH_TOKEN: &str = "$Push";
 
@@ -14,6 +13,7 @@ use std::marker::PhantomData;
 
 use serde::{
     de::{self, DeserializeOwned, Visitor},
+    ser::SerializeTupleStruct,
     Deserialize, Serialize,
 };
 pub mod owned {
@@ -407,6 +407,43 @@ where
     }
 }
 
+impl<A, V> Serialize for WithAttribute<A, V>
+where
+    A: Serialize,
+    V: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_newtype_struct(WITH_ATTRIBUTE_TOKEN, &WithAttributeInner {
+            attr: &self.attr,
+            value: &self.value,
+        })
+    }
+}
+
+struct WithAttributeInner<'a, A, V> {
+    attr: &'a A,
+    value: &'a V,
+}
+
+impl<'a, A, V> Serialize for WithAttributeInner<'a, A, V>
+where
+    A: Serialize,
+    V: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer
+    {
+        let mut seq = serializer.serialize_tuple_struct(WITH_ATTRIBUTE_TOKEN, 2)?;
+        seq.serialize_field(&self.attr)?;
+        seq.serialize_field(&self.value)?;
+        seq.end()
+    }
+}
+
 /// Wraps a push value
 pub struct Push<P>(pub P);
 
@@ -620,5 +657,141 @@ mod tests {
         });
         let buf = to_vec(&value).unwrap();
         assert_eq!(buf, b">3\r\n+message\r\n+channel\r\n+value\r\n");
+    }
+
+    #[test]
+    fn test_ignore_attribute() {
+        // |1<CR><LF>
+        //     +key-popularity<CR><LF>
+        //     %2<CR><LF>
+        //         $1<CR><LF>
+        //         a<CR><LF>
+        //         ,0.1923<CR><LF>
+        //         $1<CR><LF>
+        //         b<CR><LF>
+        //         ,0.0012<CR><LF>
+        //
+        test_deserialize(b"|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n", |value: (u64, u64)| {
+            assert_eq!(value, (2039123, 9543892));
+        });
+
+        test_deserialize(b"|1\r\n+hello\r\n+world\r\n#t\r\n", |value: bool| {
+            assert_eq!(value, true);
+        });
+    }
+
+    #[test]
+    fn test_deserialize_attribute() {
+        // |1<CR><LF>
+        //     +key-popularity<CR><LF>
+        //     %2<CR><LF>
+        //         $1<CR><LF>
+        //         a<CR><LF>
+        //         ,0.1923<CR><LF>
+        //         $1<CR><LF>
+        //         b<CR><LF>
+        //         ,0.0012<CR><LF>
+        //
+        #[derive(Deserialize)]
+        struct KeyPop {
+            a: f64,
+            b: f64,
+        }
+        #[derive(Deserialize)]
+        struct Meta {
+            #[serde(rename = "key-popularity")]
+            key_popularity: KeyPop,
+        }
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct Pair(u64, u64);
+        test_deserialize(b"|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n", |with_attr: WithAttribute<Meta, Pair>| {
+            let (attr, value) = with_attr.into_inner();
+            assert_eq!(value, Pair(2039123, 9543892));
+            assert_eq!(attr.key_popularity.a, 0.1923);
+            assert_eq!(attr.key_popularity.b, 0.0012);
+        });
+    }
+
+    #[test]
+    fn test_nested_deserialize_attribute() {
+        //  |1\r\n
+        //      +a\r\n
+        //      |1\r\n
+        //          +b\r\n
+        //          +c\r\n
+        //      :200\r\n
+        //  :300\r\n
+        #[derive(Deserialize)]
+        struct Test {
+            a: usize,
+        }
+        test_deserialize(
+            b"|1\r\n+a\r\n|1\r\n+b\r\n+c\r\n:200\r\n:300\r\n",
+            |with_attr: WithAttribute<Test, usize>| {
+                let (attr, value) = with_attr.into_inner();
+                assert_eq!(attr.a, 200);
+                assert_eq!(value, 300);
+            },
+        );
+
+        //  |1\r\n
+        //      +a\r\n
+        //      |1\r\n
+        //          +b\r\n
+        //          +c\r\n
+        //      :200\r\n
+        //  :300\r\n
+        #[derive(Deserialize)]
+        struct Attr {
+            a: WithAttribute<InnerAttr, usize>,
+        }
+        #[derive(Deserialize)]
+        struct InnerAttr {
+            b: String,
+        }
+        test_deserialize(
+            b"|1\r\n+a\r\n|1\r\n+b\r\n+c\r\n:200\r\n:300\r\n",
+            |with_attr: WithAttribute<Attr, usize>| {
+                let (attr, value) = with_attr.into_inner();
+                let (attr_attr, attr_value) = attr.a.into_inner();
+                assert_eq!(attr_attr.b, "c");
+                assert_eq!(attr_value, 200);
+                assert_eq!(value, 300);
+            },
+        );
+    }
+
+    fn s(b: &[u8]) -> &str {
+        std::str::from_utf8(b).unwrap()
+    }
+
+    #[test]
+    fn test_serialize_attribute() {
+        #[derive(Serialize)]
+        struct Test {
+            a: usize,
+        }
+        let value = WithAttribute::new(Test { a: 200 }, 300);
+        let buf = to_vec(&value).unwrap();
+        assert_eq!(s(&buf), s(b"|1\r\n+a\r\n:200\r\n:300\r\n"));
+    }
+
+    #[test]
+    fn test_serialize_nested_attribute() {
+        #[derive(Serialize)]
+        struct Attr {
+            a: WithAttribute<InnerAttr, usize>,
+        }
+        #[derive(Serialize)]
+        struct InnerAttr {
+            b: String,
+        }
+        let value = WithAttribute::new(Attr {
+            a: WithAttribute::new(InnerAttr {
+                b: "c".into(),
+            }, 200),
+        }, 300);
+        let buf = to_vec(&value).unwrap();
+        assert_eq!(s(&buf), s(b"|1\r\n+a\r\n|1\r\n+b\r\n+c\r\n:200\r\n:300\r\n"));
     }
 }
