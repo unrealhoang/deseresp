@@ -23,39 +23,48 @@ pub enum Error {
 }
 
 impl Error {
+    /// Error coming from underlying io
     pub fn io(err: std::io::Error) -> Self {
         Error::IO(err)
     }
 
+    /// Unexpected EOF encountered
     pub fn eof() -> Self {
         Error::EOF
     }
 
+    /// Expected a marker of one type but received something else
     pub fn expected_marker(expecting: &'static str) -> Self {
         Error::ExpectedMarker(expecting)
     }
 
-    /// expect some value but got something else
+    /// Expected a value of one type but received something else
     pub fn expected_value(expecting: &'static str) -> Self {
         Error::ExpectedValue(expecting)
     }
 
+    /// Received an unexpected value
     pub fn unexpected_value(unexpected: &'static str) -> Self {
         Error::UnexpectedValue(unexpected)
     }
 
+    /// Failed to convert the underlying bytes to utf8, value return the offset right before the
+    /// invalid utf8
     pub fn utf8(valid_up_to: usize) -> Self {
         Error::UTF8(valid_up_to)
     }
 
+    /// Failed to parse a float value
     pub fn overflow() -> Self {
         Error::Parse
     }
 
+    /// Failed to parse a float value
     pub fn parse() -> Self {
         Error::Parse
     }
 
+    /// Received a NaN
     pub fn nan() -> Self {
         Error::NaN
     }
