@@ -10,8 +10,8 @@ use serde::{
 
 use crate::{
     types::{
-        BLOB_ERROR_TOKEN, BLOB_STRING_TOKEN, PUSH_TOKEN, SIMPLE_ERROR_TOKEN,
-        SIMPLE_STRING_TOKEN, WITH_ATTRIBUTE_TOKEN,
+        BLOB_ERROR_TOKEN, BLOB_STRING_TOKEN, PUSH_TOKEN, SIMPLE_ERROR_TOKEN, SIMPLE_STRING_TOKEN,
+        WITH_ATTRIBUTE_TOKEN,
     },
     Error,
 };
@@ -21,15 +21,17 @@ pub struct Serializer<W> {
     writer: W,
 }
 
-/// Creates a [`Serializer`] from an underlying [`Write`]
-pub fn from_write<W: Write>(w: W) -> Serializer<W> {
-    Serializer { writer: w }
+impl<W: Write> Serializer<W> {
+    /// Creates a [`Serializer`] from an underlying [`Write`]
+    pub fn from_write(w: W) -> Self {
+        Serializer { writer: w }
+    }
 }
 
 /// Serialize to Vec<u8>
 pub fn to_vec<S: Serialize>(s: &S) -> Result<Vec<u8>, Error> {
     let mut result = Vec::new();
-    let mut serializer = from_write(&mut result);
+    let mut serializer = Serializer::from_write(&mut result);
     s.serialize(&mut serializer)?;
 
     Ok(result)
@@ -508,10 +510,8 @@ impl<'a, W: Write> serde::Serializer for WithAttributeSerializer<'a, W> {
         _len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
         match name {
-            WITH_ATTRIBUTE_TOKEN => {
-                Ok(WithAttributeSeqSerializer::new(self.se))
-            }
-            _ => Err(Error::unexpected_value("non_with_attribute_tuple_struct"))
+            WITH_ATTRIBUTE_TOKEN => Ok(WithAttributeSeqSerializer::new(self.se)),
+            _ => Err(Error::unexpected_value("non_with_attribute_tuple_struct")),
         }
     }
 }
@@ -542,7 +542,7 @@ impl<'a, W: Write> SerializeTupleStruct for WithAttributeSeqSerializer<'a, W> {
 
     fn serialize_field<T: ?Sized>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: Serialize
+        T: Serialize,
     {
         match self.state {
             WithAttributeState::Attribute => {
@@ -554,9 +554,9 @@ impl<'a, W: Write> SerializeTupleStruct for WithAttributeSeqSerializer<'a, W> {
                 self.state = WithAttributeState::Done;
                 value.serialize(&mut *self.se)
             }
-            WithAttributeState::Done => {
-                Err(serde::ser::Error::custom("with_attribute only allow 2 fields"))
-            },
+            WithAttributeState::Done => Err(serde::ser::Error::custom(
+                "with_attribute only allow 2 fields",
+            )),
         }
     }
 

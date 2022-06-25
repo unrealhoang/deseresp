@@ -4,7 +4,10 @@ use std::{
 };
 
 use num::{CheckedAdd, CheckedMul};
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{
+    de::{DeserializeOwned, Unexpected},
+    Deserialize,
+};
 
 use crate::{
     types::{AttributeSkip, PushSkip},
@@ -1013,12 +1016,27 @@ where
         self,
         _name: &'static str,
         _variants: &'static [&'static str],
-        _visitor: V,
+        visitor: V,
     ) -> Result<V::Value>
     where
         V: serde::de::Visitor<'de>,
     {
-        todo!()
+        let peek = self.peek_skip_attribute()?;
+
+        match peek {
+            b'%' => {
+                self.reader.read_u8()?;
+                let len = self.reader.read_length()?;
+                self.reader.read_crlf()?;
+                if len > 1 {
+                    return Err(Error::expected_value("1-length map"));
+                }
+                visitor.visit_enum(VariantAccess::new(self))
+            }
+            b'+' => visitor.visit_enum(UnitVariantAccess::new(self)),
+            b'$' => visitor.visit_enum(UnitVariantAccess::new(self)),
+            _ => Err(Error::expected_marker("map")),
+        }
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value>
@@ -1035,6 +1053,7 @@ where
         self.deserialize_any(visitor)
     }
 }
+
 struct CountSeqAccess<'a, R> {
     de: &'a mut Deserializer<R>,
     len: usize,
@@ -1100,6 +1119,120 @@ impl<'de, 'a, R: Reader<'de> + 'a> serde::de::MapAccess<'de> for CountMapAccess<
         V: serde::de::DeserializeSeed<'de>,
     {
         seed.deserialize(&mut *self.de)
+    }
+}
+
+struct VariantAccess<'a, R> {
+    de: &'a mut Deserializer<R>,
+}
+
+impl<'a, R> VariantAccess<'a, R> {
+    fn new(de: &'a mut Deserializer<R>) -> Self {
+        VariantAccess { de }
+    }
+}
+
+impl<'de, 'a, R: Reader<'de> + 'a> serde::de::EnumAccess<'de> for VariantAccess<'a, R> {
+    type Error = Error;
+    type Variant = Self;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant)>
+    where
+        V: serde::de::DeserializeSeed<'de>,
+    {
+        let variant_key = seed.deserialize(&mut *self.de)?;
+        Ok((variant_key, self))
+    }
+}
+
+impl<'de, 'a, R: Reader<'de> + 'a> serde::de::VariantAccess<'de> for VariantAccess<'a, R> {
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<()> {
+        // deserialize unit
+        serde::de::Deserialize::deserialize(self.de)
+    }
+
+    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value>
+    where
+        T: serde::de::DeserializeSeed<'de>,
+    {
+        seed.deserialize(self.de)
+    }
+
+    fn tuple_variant<V>(self, len: usize, visitor: V) -> Result<V::Value>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        serde::de::Deserializer::deserialize_tuple(self.de, len, visitor)
+    }
+
+    fn struct_variant<V>(self, fields: &'static [&'static str], visitor: V) -> Result<V::Value>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        serde::de::Deserializer::deserialize_struct(self.de, "", fields, visitor)
+    }
+}
+
+struct UnitVariantAccess<'a, R> {
+    de: &'a mut Deserializer<R>,
+}
+
+impl<'a, R> UnitVariantAccess<'a, R> {
+    fn new(de: &'a mut Deserializer<R>) -> Self {
+        UnitVariantAccess { de }
+    }
+}
+
+impl<'de, 'a, R: Reader<'de> + 'a> serde::de::EnumAccess<'de> for UnitVariantAccess<'a, R> {
+    type Error = Error;
+    type Variant = Self;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant)>
+    where
+        V: serde::de::DeserializeSeed<'de>,
+    {
+        let variant_key = seed.deserialize(&mut *self.de)?;
+        Ok((variant_key, self))
+    }
+}
+
+impl<'de, 'a, R: Reader<'de> + 'a> serde::de::VariantAccess<'de> for UnitVariantAccess<'a, R> {
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<()> {
+        Ok(())
+    }
+
+    fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value>
+    where
+        T: serde::de::DeserializeSeed<'de>,
+    {
+        Err(serde::de::Error::invalid_type(
+            Unexpected::UnitVariant,
+            &"newtype variant",
+        ))
+    }
+
+    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        Err(serde::de::Error::invalid_type(
+            Unexpected::UnitVariant,
+            &"tuple variant",
+        ))
+    }
+
+    fn struct_variant<V>(self, _fields: &'static [&'static str], _visitor: V) -> Result<V::Value>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        Err(serde::de::Error::invalid_type(
+            Unexpected::UnitVariant,
+            &"struct variant",
+        ))
     }
 }
 
@@ -1246,5 +1379,37 @@ mod tests {
                 );
             },
         );
+    }
+
+    #[test]
+    fn test_enum() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        enum TestEnum {
+            One(usize),
+            Two(usize, String),
+            Three { value: usize },
+            Four,
+        }
+
+        test_deserialize(b"%1\r\n+One\r\n:300\r\n", |value: TestEnum| {
+            assert_eq!(value, TestEnum::One(300))
+        });
+        test_deserialize(
+            b"%1\r\n+Two\r\n*2\r\n:300\r\n+teststring\r\n",
+            |value: TestEnum| assert_eq!(value, TestEnum::Two(300, String::from("teststring"))),
+        );
+        test_deserialize(
+            b"%1\r\n+Three\r\n%1\r\n+value\r\n:300\r\n",
+            |value: TestEnum| assert_eq!(value, TestEnum::Three { value: 300 }),
+        );
+        test_deserialize(b"%1\r\n+Four\r\n_\r\n", |value: TestEnum| {
+            assert_eq!(value, TestEnum::Four)
+        });
+        test_deserialize(b"+Four\r\n", |value: TestEnum| {
+            assert_eq!(value, TestEnum::Four)
+        });
+        test_deserialize(b"$4\r\nFour\r\n", |value: TestEnum| {
+            assert_eq!(value, TestEnum::Four)
+        });
     }
 }

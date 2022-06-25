@@ -6,7 +6,7 @@ pub mod types;
 
 pub use de::{from_read, from_slice, Deserializer};
 pub use error::{Error, Result};
-pub use ser::{from_write, to_vec, Serializer};
+pub use ser::{to_vec, Serializer};
 
 #[cfg(test)]
 pub(crate) mod test_utils {

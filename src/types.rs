@@ -416,10 +416,13 @@ where
     where
         S: serde::Serializer,
     {
-        serializer.serialize_newtype_struct(WITH_ATTRIBUTE_TOKEN, &WithAttributeInner {
-            attr: &self.attr,
-            value: &self.value,
-        })
+        serializer.serialize_newtype_struct(
+            WITH_ATTRIBUTE_TOKEN,
+            &WithAttributeInner {
+                attr: &self.attr,
+                value: &self.value,
+            },
+        )
     }
 }
 
@@ -435,7 +438,7 @@ where
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer
+        S: serde::Serializer,
     {
         let mut seq = serializer.serialize_tuple_struct(WITH_ATTRIBUTE_TOKEN, 2)?;
         seq.serialize_field(&self.attr)?;
@@ -786,12 +789,16 @@ mod tests {
         struct InnerAttr {
             b: String,
         }
-        let value = WithAttribute::new(Attr {
-            a: WithAttribute::new(InnerAttr {
-                b: "c".into(),
-            }, 200),
-        }, 300);
+        let value = WithAttribute::new(
+            Attr {
+                a: WithAttribute::new(InnerAttr { b: "c".into() }, 200),
+            },
+            300,
+        );
         let buf = to_vec(&value).unwrap();
-        assert_eq!(s(&buf), s(b"|1\r\n+a\r\n|1\r\n+b\r\n+c\r\n:200\r\n:300\r\n"));
+        assert_eq!(
+            s(&buf),
+            s(b"|1\r\n+a\r\n|1\r\n+b\r\n+c\r\n:200\r\n:300\r\n")
+        );
     }
 }
