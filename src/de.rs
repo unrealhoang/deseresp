@@ -905,6 +905,13 @@ where
                 self.skip_push = false;
                 visitor.visit_newtype_struct(self)
             }
+            crate::types::PUSH_OR_VALUE_TOKEN => {
+                if peek == b'>' {
+                    visitor.visit_map(PushOrValueAccess::new_push(self))
+                } else {
+                    visitor.visit_map(PushOrValueAccess::new_value(self))
+                }
+            }
             _ => visitor.visit_newtype_struct(self),
         }
     }
@@ -1233,6 +1240,68 @@ impl<'de, 'a, R: Reader<'de> + 'a> serde::de::VariantAccess<'de> for UnitVariant
             Unexpected::UnitVariant,
             &"struct variant",
         ))
+    }
+}
+
+struct PushOrValueAccess<'a, R> {
+    de: &'a mut Deserializer<R>,
+    is_push: bool,
+    done: bool,
+}
+
+impl<'a, R> PushOrValueAccess<'a, R> {
+    fn new_push(de: &'a mut Deserializer<R>) -> Self {
+        PushOrValueAccess { de, is_push: true, done: false }
+    }
+
+    fn new_value(de: &'a mut Deserializer<R>) -> Self {
+        PushOrValueAccess { de, is_push: false, done: false }
+    }
+}
+
+struct ConstantStrDeserializer {
+    s: &'static str
+}
+
+impl<'de> serde::de::Deserializer<'de> for ConstantStrDeserializer {
+    type Error = Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: serde::de::Visitor<'de>
+    {
+        visitor.visit_borrowed_str(self.s)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+impl<'de, 'a, R: Reader<'de> + 'a> serde::de::MapAccess<'de> for PushOrValueAccess<'a, R> {
+    type Error = Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>>
+    where
+        K: serde::de::DeserializeSeed<'de>,
+    {
+        if self.done {
+            return Ok(None);
+        }
+        if self.is_push {
+            Ok(Some(seed.deserialize(ConstantStrDeserializer { s: crate::types::PUSH_TOKEN })?))
+        } else {
+            Ok(Some(seed.deserialize(ConstantStrDeserializer { s: crate::types::VALUE_TOKEN })?))
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value>
+    where
+        V: serde::de::DeserializeSeed<'de>,
+    {
+        seed.deserialize(&mut *self.de)
     }
 }
 

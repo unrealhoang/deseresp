@@ -8,6 +8,8 @@ pub(crate) const BLOB_STRING_TOKEN: &str = "$BulkString";
 pub(crate) const ATTRIBUTE_SKIP_TOKEN: &str = "$AttributeSkip";
 pub(crate) const WITH_ATTRIBUTE_TOKEN: &str = "$WithAttribute";
 pub(crate) const PUSH_TOKEN: &str = "$Push";
+pub(crate) const VALUE_TOKEN: &str = "$Value";
+pub(crate) const PUSH_OR_VALUE_TOKEN: &str = "$PushOrValue";
 
 use std::marker::PhantomData;
 
@@ -502,6 +504,78 @@ where
     }
 }
 
+/// Wraps a push value or a normal value.
+/// Returns Push variant if the next value from the input is a Redis' Push
+/// Returns Value variant otherwise
+pub enum PushOrValue<P, V> {
+    Push(P),
+    Value(V),
+}
+
+impl<P, V> PushOrValue<P, V> {
+    /// unwrap into the inner push value
+    pub fn into_push(self) -> Option<P> {
+        match self {
+            PushOrValue::Push(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// unwrap into the inner normal value
+    pub fn into_value(self) -> Option<V> {
+        match self {
+            PushOrValue::Value(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
+struct PushOrValueVisitor<'de, P, V>(&'de PhantomData<(P, V)>);
+
+impl<'de, P, V> Visitor<'de> for PushOrValueVisitor<'de, P, V>
+where
+    P: Deserialize<'de>,
+    V: Deserialize<'de>,
+{
+    type Value = PushOrValue<P, V>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "expects 1 element map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: de::MapAccess<'de>,
+    {
+        let p_type = map.next_key::<&str>()?;
+        match p_type {
+            Some(PUSH_TOKEN) => {
+                let push = map.next_value::<Push<P>>()?;
+                Ok(PushOrValue::Push(push.into_inner()))
+            }
+            Some(VALUE_TOKEN) => {
+                let val = map.next_value::<V>()?;
+                Ok(PushOrValue::Value(val))
+            }
+            Some(v) => Err(de::Error::unknown_variant(v, &[PUSH_TOKEN, VALUE_TOKEN])),
+            None => Err(de::Error::invalid_length(0, &self))
+        }
+    }
+}
+
+impl<'de, P, V> Deserialize<'de> for PushOrValue<P, V>
+where
+    P: Deserialize<'de> + 'de,
+    V: Deserialize<'de> + 'de,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_newtype_struct(PUSH_OR_VALUE_TOKEN, PushOrValueVisitor(&PhantomData))
+    }
+}
+
 /// OK Response from a command, equivalent to SimpleString("OK")
 pub struct OkResponse;
 
@@ -799,6 +873,35 @@ mod tests {
         assert_eq!(
             s(&buf),
             s(b"|1\r\n+a\r\n|1\r\n+b\r\n+c\r\n:200\r\n:300\r\n")
+        );
+    }
+
+    #[test]
+    fn test_deserialize_push_or_value_type() {
+        #[derive(Deserialize)]
+        struct ComplexData<'a> {
+            #[serde(borrow)]
+            push_type: Cow<'a, str>,
+            #[serde(borrow)]
+            channel: Cow<'a, str>,
+            #[serde(borrow)]
+            value: Cow<'a, str>,
+        }
+        test_deserialize(
+            b">3\r\n+message\r\n+channel\r\n+value\r\n",
+            |value: PushOrValue<ComplexData<'_>, String>| {
+                let value = value.into_push().unwrap();
+                assert_eq!(value.push_type, "message");
+                assert_eq!(value.channel, "channel");
+                assert_eq!(value.value, "value");
+            },
+        );
+        test_deserialize(
+            b"+i'm value\r\n",
+            |value: PushOrValue<ComplexData<'_>, String>| {
+                let value = value.into_value().unwrap();
+                assert_eq!(value, "i'm value");
+            },
         );
     }
 }
